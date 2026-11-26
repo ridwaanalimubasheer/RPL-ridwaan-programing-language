@@ -6,28 +6,26 @@ set "SELF=%~f0"
 set "RPL_DIR=%USERPROFILE%\RPL"
 
 echo ==================================================
-echo   Installing RPL Studio into: %RPL_DIR%
+echo   Installing Fixed RPL Studio into: %RPL_DIR%
 echo ==================================================
 
 if not exist "%RPL_DIR%" mkdir "%RPL_DIR%"
 cd /d "%RPL_DIR%"
 
-:: Check Python
 python --version >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Python is not installed or not in PATH!
-    echo Install Python from https://www.python.org/ and check "Add Python to PATH".
     pause
     exit /b 1
 )
 
-:: 1. Extract rpl_studio.py from this file
+:: 1. Extract rpl_studio.py cleanly
 powershell -NoProfile -Command "$s = '# ===BEGIN_' + 'RPL_PY==='; $e = '# ===END_' + 'RPL_PY==='; $c = Get-Content -LiteralPath $env:SELF -Raw; $m = [regex]::Match($c, '(?s)' + $s + '(.*?)' + $e); Set-Content -Path '%RPL_DIR%\rpl_studio.py' -Value $m.Groups[1].Value.Trim() -Encoding UTF8"
 
-:: 2. Create library.txt, main.rpl, README.txt
+:: 2. Create library.txt, main.rpl, README.txt if missing
 python "%RPL_DIR%\rpl_studio.py" --init
 
-:: 3. Install PyInstaller & build rpl.exe
+:: 3. Build rpl.exe
 echo Building rpl.exe (please wait)...
 python -m pip install --upgrade pyinstaller
 python -m PyInstaller --noconfirm --onefile --windowed --name rpl --distpath "%RPL_DIR%" --workpath "%RPL_DIR%\build" --specpath "%RPL_DIR%\build" "%RPL_DIR%\rpl_studio.py"
@@ -39,21 +37,18 @@ if errorlevel 1 (
 
 if exist "%RPL_DIR%\build" rmdir /s /q "%RPL_DIR%\build"
 
-:: 4. Add RPL folder to User PATH (works anywhere like System32, safely!)
+:: 4. Add RPL folder to User PATH
 powershell -NoProfile -Command "$dir = $env:RPL_DIR; $p = [Environment]::GetEnvironmentVariable('Path','User'); if ($p -notlike \"*$dir*\") { $newP = if ($p) { \"$p;$dir\" } else { $dir }; [Environment]::SetEnvironmentVariable('Path', $newP, 'User') }"
 
-:: 5. Build RPL_Release.zip for Google Drive / Coders
+:: 5. Build RPL_Release.zip
 powershell -NoProfile -Command "Compress-Archive -Path '%RPL_DIR%\rpl.exe','%RPL_DIR%\library.txt','%RPL_DIR%\main.rpl','%RPL_DIR%\README.txt' -DestinationPath '%RPL_DIR%\RPL_Release.zip' -Force"
 
 echo.
 echo ==================================================
-echo   SUCCESS!
-echo   EXE:  %RPL_DIR%\rpl.exe
-echo   TXT:  %RPL_DIR%\library.txt
-echo   ZIP:  %RPL_DIR%\RPL_Release.zip
-echo   (You can now type "rpl" in Win+R or new CMD!)
+echo   FIXED! Launching rpl.exe now...
 echo ==================================================
 
+start "" "%RPL_DIR%\rpl.exe"
 explorer "%RPL_DIR%"
 pause
 exit /b 0
@@ -62,6 +57,8 @@ exit /b 0
 import os
 import sys
 import time
+import ctypes
+import traceback
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox
@@ -136,7 +133,7 @@ def decode_binary(binary_str):
 class RPLStudioApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("RPL Studio — Ridwaan Programming Language")
+        self.root.title("RPL Studio - Ridwaan Programming Language")
         self.root.geometry("1220x740")
         self.root.configure(bg="#090d1a")
         self.running = False
@@ -156,18 +153,18 @@ class RPLStudioApp:
             font=("Segoe UI", 16, "bold")
         ).pack(anchor="w")
         tk.Label(
-            title_frame, text="Ridwaan Programming Language • Multi-word & 8-Bit Binary → Laptop Actions",
+            title_frame, text="Ridwaan Programming Language | Multi-word & 8-Bit Binary -> Laptop Actions",
             fg="#8f9ec9", bg="#11182d", font=("Segoe UI", 9)
         ).pack(anchor="w")
 
         btn_frame = tk.Frame(top, bg="#11182d")
         btn_frame.pack(side="right")
 
-        self._btn(btn_frame, "↻ Reload .txt", self.reload_library_from_disk, "#1e294d", "#e8eefc").pack(side="left", padx=4)
-        self._btn(btn_frame, "📂 Load .txt", self.pick_library_file, "#1e294d", "#e8eefc").pack(side="left", padx=4)
-        self._btn(btn_frame, "💾 Save All", self.save_files, "#1e294d", "#e8eefc").pack(side="left", padx=4)
-        self._btn(btn_frame, "■ Stop", self.stop_rpl, "#3b1724", "#fb7185").pack(side="left", padx=4)
-        self._btn(btn_frame, "▶ Run RPL", self.start_rpl, "#10b981", "#041f13").pack(side="left", padx=4)
+        self._btn(btn_frame, "Reload .txt", self.reload_library_from_disk, "#1e294d", "#e8eefc").pack(side="left", padx=4)
+        self._btn(btn_frame, "Open .txt", self.pick_library_file, "#1e294d", "#e8eefc").pack(side="left", padx=4)
+        self._btn(btn_frame, "Save All", self.save_files, "#1e294d", "#e8eefc").pack(side="left", padx=4)
+        self._btn(btn_frame, "Stop", self.stop_rpl, "#3b1724", "#fb7185").pack(side="left", padx=4)
+        self._btn(btn_frame, "Run RPL", self.start_rpl, "#10b981", "#041f13").pack(side="left", padx=4)
 
         main = tk.Frame(self.root, bg="#090d1a", padx=14, pady=14)
         main.pack(fill="both", expand=True)
@@ -339,7 +336,7 @@ class RPLStudioApp:
         win.title(title_text)
         win.geometry("420x220")
         win.configure(bg="#11182d")
-        tk.Label(win, text="🪟 " + title_text, bg="#11182d", fg="#38bdf8", font=("Segoe UI", 16, "bold")).pack(pady=(28, 10))
+        tk.Label(win, text="[RPL] " + title_text, bg="#11182d", fg="#38bdf8", font=("Segoe UI", 16, "bold")).pack(pady=(28, 10))
         tk.Label(win, text="Opened by RPL 8-bit binary command!", bg="#11182d", fg="#e8eefc", font=("Segoe UI", 11)).pack(pady=4)
         tk.Label(win, text=binary_used, bg="#080c18", fg="#34d399", font=("Consolas", 8), wraplength=380, padx=10, pady=8).pack(pady=14, padx=16, fill="x")
 
@@ -357,9 +354,9 @@ class RPLStudioApp:
     def _send_laptop(self, word, binary, extra_arg=None):
         decoded = decode_binary(binary)
         if decoded:
-            msg = f"{word} ──▶ {binary}  (decoded: '{decoded}')"
+            msg = f"{word} --> {binary}  (decoded: '{decoded}')"
         else:
-            msg = f"{word} ──▶ {binary}"
+            msg = f"{word} --> {binary}"
 
         self.root.after(0, self._append_log, self.laptop_log, msg)
         self.root.after(0, self._update_leds, binary)
@@ -394,4 +391,79 @@ class RPLStudioApp:
             if line.startswith("repeat "):
                 try:
                     count = int(line[7:].strip())
-    
+                    loop_stack.append([i, count])
+                except ValueError:
+                    self.root.after(0, self._append_log, self.screen_log, f"Line {line_num}: Invalid repeat count")
+                    break
+                continue
+
+            if line == "end":
+                if not loop_stack:
+                    self.root.after(0, self._append_log, self.screen_log, f"Line {line_num}: Extra 'end'")
+                    break
+                loop_stack[-1][1] -= 1
+                if loop_stack[-1][1] > 0:
+                    i = loop_stack[-1][0]
+                else:
+                    loop_stack.pop()
+                continue
+
+            if line == "go" or line.startswith("go "):
+                arg = line[2:].strip()
+                if "go" in dictionary:
+                    self._send_laptop("go", dictionary["go"])
+
+                if (arg.startswith('"') and arg.endswith('"')) or (arg.startswith("'") and arg.endswith("'")):
+                    text = arg[1:-1]
+                    self.root.after(0, self._append_log, self.screen_log, f"> {text}")
+                    self._send_laptop(f'"{text}"', encode_binary(text))
+                elif arg in dictionary:
+                    self.root.after(0, self._append_log, self.screen_log, f"> {dictionary[arg]}")
+                    self._send_laptop(arg, dictionary[arg])
+                elif arg:
+                    self.root.after(0, self._append_log, self.screen_log, f"> {arg}")
+                time.sleep(0.15)
+                continue
+
+            matched_cmd = None
+            extra_arg = None
+            for k in sorted_keys:
+                if line == k:
+                    matched_cmd = k
+                    break
+                elif line.startswith(k + " "):
+                    rest = line[len(k):].strip()
+                    if (rest.startswith('"') and rest.endswith('"')) or (rest.startswith("'") and rest.endswith("'")):
+                        matched_cmd = k
+                        extra_arg = rest[1:-1]
+                        break
+
+            if matched_cmd:
+                self._send_laptop(matched_cmd, dictionary[matched_cmd], extra_arg)
+                time.sleep(0.18)
+                continue
+
+            for word in line.split():
+                if word in dictionary:
+                    self._send_laptop(word, dictionary[word])
+                    time.sleep(0.18)
+                else:
+                    self.root.after(0, self._append_log, self.screen_log, f"Line {line_num}: '{word}' is not in library.txt")
+                    self.running = False
+                    break
+
+        self.running = False
+        self.root.after(0, self._append_log, self.screen_log, "Done.")
+
+
+if __name__ == "__main__":
+    try:
+        if "--init" in sys.argv:
+            ensure_files()
+            sys.exit(0)
+        root = tk.Tk()
+        RPLStudioApp(root)
+        root.mainloop()
+    except Exception:
+        ctypes.windll.user32.MessageBoxW(0, traceback.format_exc(), "RPL Studio Error", 0x10)
+# ===END_RPL_PY===
