@@ -1,16 +1,23 @@
 @echo off
-title RPL v2.0 Updater, Installer and EXE Builder
+title RPL v3.0 Installer, Updater and EXE Builder
 setlocal
 
 set "SELF=%~f0"
 set "RPL_DIR=%USERPROFILE%\RPL"
 
 echo ==================================================
-echo   Updating RPL Studio (Removing old version...)
+echo   Installing RPL Studio v3.0 into: %RPL_DIR%
 echo ==================================================
 
-:: Close rpl.exe if currently running
+:: Close rpl.exe if running
 taskkill /f /im rpl.exe >nul 2>&1
+timeout /t 1 /nobreak >nul
+
+if not exist "%RPL_DIR%" mkdir "%RPL_DIR%"
+cd /d "%RPL_DIR%"
+
+:: Backup existing library.txt before upgrading
+if exist "%RPL_DIR%\library.txt" copy /y "%RPL_DIR%\library.txt" "%RPL_DIR%\library.txt.bak" >nul
 
 :: Delete old version files
 if exist "%RPL_DIR%\rpl.exe" del /f /q "%RPL_DIR%\rpl.exe"
@@ -21,9 +28,6 @@ if exist "%RPL_DIR%\README.txt" del /f /q "%RPL_DIR%\README.txt"
 if exist "%RPL_DIR%\library.txt" del /f /q "%RPL_DIR%\library.txt"
 if exist "%RPL_DIR%\build" rmdir /s /q "%RPL_DIR%\build"
 
-if not exist "%RPL_DIR%" mkdir "%RPL_DIR%"
-cd /d "%RPL_DIR%"
-
 python --version >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Python is not installed or not in PATH!
@@ -31,14 +35,14 @@ if errorlevel 1 (
     exit /b 1
 )
 
-:: 1. Extract v2.0 rpl_studio.py
+:: 1. Extract v3.0 rpl_studio.py
 powershell -NoProfile -Command "$s = '# ===BEGIN_' + 'RPL_PY==='; $e = '# ===END_' + 'RPL_PY==='; $c = Get-Content -LiteralPath $env:SELF -Raw; $m = [regex]::Match($c, '(?s)' + $s + '(.*?)' + $e); Set-Content -Path '%RPL_DIR%\rpl_studio.py' -Value $m.Groups[1].Value.Trim() -Encoding UTF8"
 
-:: 2. Create hello.rpl, library.txt, README.txt
+:: 2. Initialize files
 python "%RPL_DIR%\rpl_studio.py" --init
 
-:: 3. Build new rpl.exe
-echo Building rpl.exe v2.0...
+:: 3. Build rpl.exe
+echo Building rpl.exe v3.0...
 python -m pip install --upgrade pyinstaller
 python -m PyInstaller --noconfirm --onefile --windowed --name rpl --distpath "%RPL_DIR%" --workpath "%RPL_DIR%\build" --specpath "%RPL_DIR%\build" "%RPL_DIR%\rpl_studio.py"
 if errorlevel 1 (
@@ -52,15 +56,14 @@ if exist "%RPL_DIR%\build" rmdir /s /q "%RPL_DIR%\build"
 :: 4. Add RPL folder to User PATH
 powershell -NoProfile -Command "$dir = $env:RPL_DIR; $p = [Environment]::GetEnvironmentVariable('Path','User'); if ($p -notlike \"*$dir*\") { $newP = if ($p) { \"$p;$dir\" } else { $dir }; [Environment]::SetEnvironmentVariable('Path', $newP, 'User') }"
 
-:: 5. Build fresh RPL_Release.zip
-powershell -NoProfile -Command "Compress-Archive -Path '%RPL_DIR%\rpl.exe','%RPL_DIR%\library.txt','%RPL_DIR%\hello.rpl','%RPL_DIR%\README.txt' -DestinationPath '%RPL_DIR%\RPL_Release.zip' -Force"
+:: 5. Build RPL_Release.zip safely (retries automatically if Antivirus scans rpl.exe)
+timeout /t 3 /nobreak >nul
+powershell -NoProfile -Command "for ($i=1; $i -le 10; $i++) { try { Compress-Archive -Path '%RPL_DIR%\rpl.exe','%RPL_DIR%\library.txt','%RPL_DIR%\hello.rpl','%RPL_DIR%\update_url.txt','%RPL_DIR%\README.txt' -DestinationPath '%RPL_DIR%\RPL_Release.zip' -Force -ErrorAction Stop; break } catch { Write-Host 'Waiting for Antivirus scan...'; Start-Sleep -Seconds 2 } }"
 
 echo.
 echo ==================================================
-echo   RPL v2.0 READY!
+echo   RPL v3.0 READY!
 echo   EXE:  %RPL_DIR%\rpl.exe
-echo   CODE: %RPL_DIR%\hello.rpl
-echo   TXT:  %RPL_DIR%\library.txt
 echo   ZIP:  %RPL_DIR%\RPL_Release.zip
 echo ==================================================
 
@@ -74,11 +77,13 @@ import os
 import re
 import sys
 import time
-import math as py_math
-import random
+import shutil
 import ctypes
+import random
 import traceback
 import threading
+import urllib.request
+import math as py_math
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
@@ -87,7 +92,7 @@ try:
 except ImportError:
     winsound = None
 
-VERSION = "2.0"
+VERSION = "3.0"
 
 if getattr(sys, "frozen", False):
     APP_DIR = os.path.dirname(sys.executable)
@@ -95,16 +100,21 @@ else:
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
 LIB_PATH = os.path.join(APP_DIR, "library.txt")
+LIB_BACKUP_PATH = os.path.join(APP_DIR, "library.txt.bak")
 DEFAULT_CODE_PATH = os.path.join(APP_DIR, "hello.rpl")
+URL_CONFIG_PATH = os.path.join(APP_DIR, "update_url.txt")
 README_PATH = os.path.join(APP_DIR, "README.txt")
+CRASH_LOG_PATH = os.path.join(APP_DIR, "rpl_error.log")
+DOWNLOADS_LIB_PATH = os.path.join(os.path.expanduser("~"), "Downloads", "library.txt")
 
-DEFAULT_LIB = """// RPL Library File (Format: command:binary | description for devs)
-open window:01101111 01110000 01100101 01101110 00100000 01110111 01101001 01101110 01100100 01101111 01110111 | Opens a new RPL window on laptop
-hello:01101000 01100101 01101100 01101100 01101111 | Sends hello signal (104 101 108 108 111)
-hi:1100 | Sends 4-bit hi signal (1100)
-go:0001 | Prints text to screen (like Python print)
-beep:1111 | Plays a beep sound on the laptop
-stop:0000 | Sends stop signal (0000)
+DEFAULT_LIB = """// RPL Real 8-Bit ASCII Binary Library
+// Format: command:binary | description for devs
+open window:01101111 01110000 01100101 01101110 00100000 01110111 01101001 01101110 01100100 01101111 01110111 | Opens a new RPL window
+hello:01101000 01100101 01101100 01101100 01101111 | Sends hello in 8-bit ASCII binary
+hi:01101000 01101001 | Sends hi in 8-bit ASCII binary
+go:01100111 01101111 | Prints text to screen (like Python print)
+beep:01100010 01100101 01100101 01110000 | Plays a beep sound on the laptop
+stop:01110011 01110100 01101111 01110000 | Sends stop signal
 """
 
 DEFAULT_CODE = """// hello.rpl - Write RPL just like Python!
@@ -135,25 +145,93 @@ open window "Ridwaan App"
 beep
 """
 
-DEFAULT_README = """RPL v2.0 (Ridwaan Programming Language)
+DEFAULT_URL_CFG = """# Optional: Paste your Google Drive share link or raw .txt URL on the line below
+# Example: https://drive.google.com/file/d/YOUR_FILE_ID/view?usp=sharing
+"""
+
+DEFAULT_README = """RPL v3.0 (Ridwaan Programming Language)
 =======================================
 1. Double-click rpl.exe to launch RPL Studio.
-2. Code files end in .rpl (example: hello.rpl).
-3. library.txt stores word:binary commands (optional "| description" for devs).
-4. Click "Library Base" inside RPL Studio to view all available commands & libraries.
+2. Write Python-style code in .rpl files (example: hello.rpl).
+3. Updating library.txt:
+   - Download a new library.txt to your Downloads folder and RPL will ask to update automatically!
+   - OR paste your Google Drive link in update_url.txt and click "Check Updates".
+4. Click "Library Base" inside RPL Studio to see all commands & libraries.
 """
 
 
 def ensure_files():
-    if not os.path.exists(LIB_PATH):
-        with open(LIB_PATH, "w", encoding="utf-8") as f:
-            f.write(DEFAULT_LIB)
-    if not os.path.exists(DEFAULT_CODE_PATH):
-        with open(DEFAULT_CODE_PATH, "w", encoding="utf-8") as f:
-            f.write(DEFAULT_CODE)
-    if not os.path.exists(README_PATH):
-        with open(README_PATH, "w", encoding="utf-8") as f:
-            f.write(DEFAULT_README)
+    defaults = [
+        (LIB_PATH, DEFAULT_LIB),
+        (DEFAULT_CODE_PATH, DEFAULT_CODE),
+        (URL_CONFIG_PATH, DEFAULT_URL_CFG),
+        (README_PATH, DEFAULT_README),
+    ]
+    for path, content in defaults:
+        if not os.path.exists(path):
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+
+
+def validate_library_text(content):
+    head = content[:500].lower()
+    if "<html" in head or "<!doctype" in head:
+        return False, "Downloaded file is an HTML webpage, not a plain .txt file (check Google Drive sharing!)."
+    count = 0
+    for raw in content.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("//") or line.startswith("#"):
+            continue
+        if ":" in line:
+            word, rest = line.split(":", 1)
+            if word.strip() and rest.strip():
+                count += 1
+    if count == 0:
+        return False, "No valid 'command:binary' lines found in the file."
+    return True, count
+
+
+def safe_write_library(new_content):
+    ok, info = validate_library_text(new_content)
+    if not ok:
+        raise ValueError(info)
+    if os.path.exists(LIB_PATH):
+        shutil.copy2(LIB_PATH, LIB_BACKUP_PATH)
+    tmp_path = LIB_PATH + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        f.write(new_content)
+    os.replace(tmp_path, LIB_PATH)
+    return info
+
+
+def normalize_download_url(url):
+    url = url.strip()
+    # Convert normal Google Drive share links into direct download links
+    m = re.search(r"drive\.google\.com/file/d/([a-zA-Z0-9_-]+)", url)
+    if m:
+        return f"https://drive.google.com/uc?export=download&id={m.group(1)}"
+    m2 = re.search(r"drive\.google\.com/open\?id=([a-zA-Z0-9_-]+)", url)
+    if m2:
+        return f"https://drive.google.com/uc?export=download&id={m2.group(1)}"
+    return url
+
+
+def read_configured_url():
+    if not os.path.exists(URL_CONFIG_PATH):
+        return ""
+    with open(URL_CONFIG_PATH, "r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.strip()
+            if line and not line.startswith("#") and line.startswith(("http://", "https://")):
+                return line
+    return ""
+
+
+def save_configured_url(url):
+    with open(URL_CONFIG_PATH, "w", encoding="utf-8") as f:
+        f.write("# Paste your Google Drive share link or raw .txt URL below:\n")
+        if url.strip():
+            f.write(url.strip() + "\n")
 
 
 def encode_binary(text):
@@ -189,7 +267,6 @@ def strip_comment(line):
     return line.rstrip()
 
 
-# Built-in Standard Libraries for Python-style "use <lib>"
 class MathLib:
     pi = round(py_math.pi, 5)
     def rand(self, a=1, b=10): return random.randint(int(a), int(b))
@@ -224,14 +301,18 @@ class RPLStudioApp:
     def __init__(self, root):
         self.root = root
         self.root.title(f"RPL Studio v{VERSION} - Ridwaan Programming Language")
-        self.root.geometry("1240x750")
+        self.root.geometry("1260x760")
         self.root.configure(bg="#090d1a")
         self.running = False
         self.current_rpl_path = DEFAULT_CODE_PATH
+        self.pure_binary_var = tk.BooleanVar(value=True)
 
         ensure_files()
         self._build_ui()
         self.load_files()
+
+        self.root.bind("<Control-s>", lambda e: self.save_files())
+        self.root.after(400, self.startup_update_check)
 
     def _build_ui(self):
         top = tk.Frame(self.root, bg="#11182d", pady=10, padx=16)
@@ -244,19 +325,20 @@ class RPLStudioApp:
             font=("Segoe UI", 16, "bold")
         ).pack(anchor="w")
         tk.Label(
-            title_frame, text="Write Python-style .rpl code + Daily library.txt commands",
+            title_frame, text="Reliable Python-style .rpl IDE | Auto-Updating library.txt & Real 8-Bit Binary",
             fg="#8f9ec9", bg="#11182d", font=("Segoe UI", 9)
         ).pack(anchor="w")
 
         btn_frame = tk.Frame(top, bg="#11182d")
         btn_frame.pack(side="right")
 
-        self._btn(btn_frame, "Library Base", self.open_library_base, "#2563eb", "#ffffff").pack(side="left", padx=4)
-        self._btn(btn_frame, "Reload .txt", self.reload_library_from_disk, "#1e294d", "#e8eefc").pack(side="left", padx=4)
-        self._btn(btn_frame, "Open .rpl", self.open_rpl_file, "#1e294d", "#e8eefc").pack(side="left", padx=4)
-        self._btn(btn_frame, "Save All", self.save_files, "#1e294d", "#e8eefc").pack(side="left", padx=4)
-        self._btn(btn_frame, "Stop", self.stop_rpl, "#3b1724", "#fb7185").pack(side="left", padx=4)
-        self._btn(btn_frame, "Run RPL", self.start_rpl, "#10b981", "#041f13").pack(side="left", padx=4)
+        self._btn(btn_frame, "Library Base", self.open_library_base, "#2563eb", "#ffffff").pack(side="left", padx=3)
+        self._btn(btn_frame, "Check Updates", self.open_update_dialog, "#0f766e", "#ffffff").pack(side="left", padx=3)
+        self._btn(btn_frame, "Reload .txt", self.reload_library_from_disk, "#1e294d", "#e8eefc").pack(side="left", padx=3)
+        self._btn(btn_frame, "Open .rpl", self.open_rpl_file, "#1e294d", "#e8eefc").pack(side="left", padx=3)
+        self._btn(btn_frame, "Save (Ctrl+S)", self.save_files, "#1e294d", "#e8eefc").pack(side="left", padx=3)
+        self._btn(btn_frame, "Stop", self.stop_rpl, "#3b1724", "#fb7185").pack(side="left", padx=3)
+        self._btn(btn_frame, "Run RPL", self.start_rpl, "#10b981", "#041f13").pack(side="left", padx=3)
 
         main = tk.Frame(self.root, bg="#090d1a", padx=14, pady=14)
         main.pack(fill="both", expand=True)
@@ -265,14 +347,12 @@ class RPLStudioApp:
         main.columnconfigure(2, weight=1)
         main.rowconfigure(0, weight=1)
 
-        # Col 1: library.txt
-        c1 = self._card(main, "library.txt (Daily Commands : Binary)")
+        c1 = self._card(main, "library.txt (Real 8-Bit Binary Commands)")
         c1.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         self.lib_text = self._editor(c1, fg="#fbbf24")
         self.lib_status = tk.Label(c1, text="0 commands loaded", bg="#11182d", fg="#8f9ec9", anchor="w", padx=10, pady=6, font=("Segoe UI", 9))
         self.lib_status.pack(fill="x")
 
-        # Col 2: .rpl file editor
         c2 = tk.Frame(main, bg="#11182d", highlightbackground="#273663", highlightthickness=1)
         c2.grid(row=0, column=1, sticky="nsew", padx=4)
         self.code_header = tk.Label(
@@ -283,15 +363,26 @@ class RPLStudioApp:
         self.code_text = self._editor(c2, fg="#e2e8f0")
         tk.Label(c2, text='Python style: name = "Ridwaan"  |  if/else  |  for  |  def  |  go', bg="#11182d", fg="#8f9ec9", anchor="w", padx=10, pady=6, font=("Segoe UI", 9)).pack(fill="x")
 
-        # Col 3: Laptop Binary + Screen Output
         c3 = tk.Frame(main, bg="#090d1a")
         c3.grid(row=0, column=2, sticky="nsew", padx=(8, 0))
         c3.rowconfigure(0, weight=1)
         c3.rowconfigure(1, weight=1)
         c3.columnconfigure(0, weight=1)
 
-        top_r = self._card(c3, "Sent to Laptop (8-Bit Register & Binary)")
+        top_r = tk.Frame(c3, bg="#11182d", highlightbackground="#273663", highlightthickness=1)
         top_r.grid(row=0, column=0, sticky="nsew", pady=(0, 8))
+        top_r_head = tk.Frame(top_r, bg="#17203d")
+        top_r_head.pack(fill="x")
+        tk.Label(
+            top_r_head, text="Sent to Laptop (Binary Signal)", bg="#17203d", fg="#e8eefc",
+            font=("Segoe UI", 10, "bold"), anchor="w", padx=12, pady=8
+        ).pack(side="left")
+        tk.Checkbutton(
+            top_r_head, text="Pure Binary Only", variable=self.pure_binary_var,
+            bg="#17203d", fg="#34d399", selectcolor="#090d1a",
+            activebackground="#17203d", activeforeground="#34d399",
+            font=("Segoe UI", 8, "bold")
+        ).pack(side="right", padx=10)
 
         led_bar = tk.Frame(top_r, bg="#070b15", padx=10, pady=8)
         led_bar.pack(fill="x")
@@ -311,7 +402,7 @@ class RPLStudioApp:
     def _btn(self, parent, text, cmd, bg, fg):
         return tk.Button(
             parent, text=text, command=cmd, bg=bg, fg=fg,
-            font=("Segoe UI", 9, "bold"), relief="flat", padx=10, pady=5, cursor="hand2"
+            font=("Segoe UI", 9, "bold"), relief="flat", padx=9, pady=5, cursor="hand2"
         )
 
     def _card(self, parent, title):
@@ -338,11 +429,116 @@ class RPLStudioApp:
         txt.pack(fill="both", expand=True)
         return txt
 
+    # --- Auto Update Logic (Downloads folder + Google Drive / URL) ---
+    def startup_update_check(self):
+        # 1. Check if user downloaded a newer library.txt normally into Downloads
+        if os.path.exists(DOWNLOADS_LIB_PATH) and os.path.exists(LIB_PATH):
+            try:
+                dl_mtime = os.path.getmtime(DOWNLOADS_LIB_PATH)
+                cur_mtime = os.path.getmtime(LIB_PATH)
+                if dl_mtime > cur_mtime + 2:
+                    with open(DOWNLOADS_LIB_PATH, "r", encoding="utf-8") as f:
+                        new_content = f.read()
+                    ok, count = validate_library_text(new_content)
+                    if ok:
+                        if messagebox.askyesno(
+                            "New library.txt Found!",
+                            f"A newer library.txt ({count} commands) was found in your Downloads folder.\n\nUpdate RPL's library.txt now?"
+                        ):
+                            safe_write_library(new_content)
+                            self.reload_library_from_disk(silent=True)
+                            self._append_log(self.screen_log, f"[Updater] Updated library.txt from Downloads ({count} commands).")
+                            return
+            except Exception:
+                pass
+
+        # 2. Check configured online URL silently in background
+        url = read_configured_url()
+        if url:
+            threading.Thread(target=self._download_url_worker, args=(url, True), daemon=True).start()
+
+    def open_update_dialog(self):
+        win = tk.Toplevel(self.root)
+        win.title("Update library.txt")
+        win.geometry("580x320")
+        win.configure(bg="#11182d")
+
+        tk.Label(win, text="Update library.txt", bg="#11182d", fg="#38bdf8", font=("Segoe UI", 14, "bold")).pack(anchor="w", padx=18, pady=(16, 4))
+        tk.Label(
+            win,
+            text="Option 1: Import a library.txt you downloaded normally to your Downloads folder.\nOption 2: Paste a Google Drive share link (set to 'Anyone with the link') or raw .txt URL.",
+            bg="#11182d", fg="#cbd5e1", justify="left", font=("Segoe UI", 9)
+        ).pack(anchor="w", padx=18, pady=(0, 12))
+
+        url_entry = tk.Entry(win, bg="#080c18", fg="#e8eefc", insertbackground="#38bdf8", font=("Consolas", 10), relief="flat")
+        url_entry.insert(0, read_configured_url())
+        url_entry.pack(fill="x", padx=18, ipady=7)
+
+        status_lbl = tk.Label(win, text="", bg="#11182d", fg="#34d399", font=("Segoe UI", 9))
+        status_lbl.pack(anchor="w", padx=18, pady=8)
+
+        btn_row = tk.Frame(win, bg="#11182d")
+        btn_row.pack(fill="x", padx=18, pady=10)
+
+        def import_downloads():
+            if not os.path.exists(DOWNLOADS_LIB_PATH):
+                path = filedialog.askopenfilename(title="Select downloaded library.txt", initialdir=os.path.join(os.path.expanduser("~"), "Downloads"), filetypes=[("Text Files", "*.txt")])
+                if not path:
+                    return
+            else:
+                path = DOWNLOADS_LIB_PATH
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                count = safe_write_library(content)
+                self.reload_library_from_disk(silent=True)
+                status_lbl.config(text=f"Updated from file! ({count} commands loaded)", fg="#34d399")
+            except Exception as e:
+                status_lbl.config(text=f"Error: {e}", fg="#fb7185")
+
+        def download_from_url():
+            raw_url = url_entry.get().strip()
+            if not raw_url:
+                status_lbl.config(text="Please paste a Google Drive or .txt URL first.", fg="#fbbf24")
+                return
+            save_configured_url(raw_url)
+            status_lbl.config(text="Downloading...", fg="#38bdf8")
+            threading.Thread(target=self._download_url_worker, args=(raw_url, False, status_lbl), daemon=True).start()
+
+        self._btn(btn_row, "Import from Downloads", import_downloads, "#1e294d", "#e8eefc").pack(side="left", padx=(0, 8))
+        self._btn(btn_row, "Download & Update Now", download_from_url, "#10b981", "#041f13").pack(side="left")
+
+    def _download_url_worker(self, raw_url, silent, status_lbl=None):
+        try:
+            direct_url = normalize_download_url(raw_url)
+            req = urllib.request.Request(direct_url, headers={"User-Agent": "RPL-Studio/3.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                content = resp.read().decode("utf-8", errors="replace")
+
+            cur = ""
+            if os.path.exists(LIB_PATH):
+                with open(LIB_PATH, "r", encoding="utf-8") as f:
+                    cur = f.read()
+
+            if content.strip() == cur.strip():
+                if not silent and status_lbl:
+                    self.root.after(0, lambda: status_lbl.config(text="Already up to date!", fg="#34d399"))
+                return
+
+            count = safe_write_library(content)
+            self.root.after(0, lambda: self.reload_library_from_disk(silent=True))
+            self.root.after(0, self._append_log, self.screen_log, f"[Updater] library.txt auto-updated ({count} commands).")
+            if not silent and status_lbl:
+                self.root.after(0, lambda: status_lbl.config(text=f"Success! Updated ({count} commands).", fg="#34d399"))
+        except Exception as e:
+            if not silent and status_lbl:
+                self.root.after(0, lambda err=str(e): status_lbl.config(text=f"Update failed: {err}", fg="#fb7185"))
+
     def open_library_base(self):
         _, meta = self.parse_library()
         win = tk.Toplevel(self.root)
         win.title("RPL Library Base - Developer Guide")
-        win.geometry("760x600")
+        win.geometry("780x620")
         win.configure(bg="#090d1a")
 
         tk.Label(
@@ -405,13 +601,14 @@ class RPLStudioApp:
         self.code_header.config(text=f"{os.path.basename(self.current_rpl_path)} (Python-style RPL Code)")
         self.parse_library()
 
-    def reload_library_from_disk(self):
+    def reload_library_from_disk(self, silent=False):
         if os.path.exists(LIB_PATH):
             with open(LIB_PATH, "r", encoding="utf-8") as f:
                 self.lib_text.delete("1.0", "end")
                 self.lib_text.insert("1.0", f.read())
             d, _ = self.parse_library()
-            messagebox.showinfo("Reloaded", f"Loaded {len(d)} commands from library.txt!")
+            if not silent:
+                messagebox.showinfo("Reloaded", f"Loaded {len(d)} commands from library.txt!")
 
     def open_rpl_file(self):
         path = filedialog.askopenfilename(title="Open .rpl File", initialdir=APP_DIR, filetypes=[("RPL Files", "*.rpl"), ("All Files", "*.*")])
@@ -424,13 +621,16 @@ class RPLStudioApp:
         self.code_header.config(text=f"{os.path.basename(path)} (Python-style RPL Code)")
 
     def save_files(self):
-        self.save_files_silent()
-        self.parse_library()
-        messagebox.showinfo("Saved", f"Saved library.txt and {os.path.basename(self.current_rpl_path)}!")
+        try:
+            self.save_files_silent()
+            self.parse_library()
+            messagebox.showinfo("Saved", f"Saved library.txt and {os.path.basename(self.current_rpl_path)}!")
+        except Exception as e:
+            messagebox.showerror("Save Error", str(e))
 
     def save_files_silent(self):
-        with open(LIB_PATH, "w", encoding="utf-8") as f:
-            f.write(self.lib_text.get("1.0", "end-1c"))
+        lib_content = self.lib_text.get("1.0", "end-1c")
+        safe_write_library(lib_content)
         with open(self.current_rpl_path, "w", encoding="utf-8") as f:
             f.write(self.code_text.get("1.0", "end-1c"))
 
@@ -489,7 +689,11 @@ class RPLStudioApp:
         self.running = False
 
     def start_rpl(self):
-        self.save_files_silent()
+        try:
+            self.save_files_silent()
+        except Exception as e:
+            messagebox.showerror("library.txt Error", str(e))
+            return
         self._clear_logs()
         self.running = True
         dictionary, _ = self.parse_library()
@@ -498,7 +702,9 @@ class RPLStudioApp:
 
     def _send_laptop(self, word, binary, extra_arg=None):
         decoded = decode_binary(binary)
-        if decoded:
+        if self.pure_binary_var.get():
+            msg = binary
+        elif decoded:
             msg = f"{word} --> {binary}  (decoded: '{decoded}')"
         else:
             msg = f"{word} --> {binary}"
@@ -515,7 +721,6 @@ class RPLStudioApp:
             except Exception:
                 pass
 
-    # --- Python-style Indentation Block Parser ---
     def _parse_python_blocks(self, raw_lines):
         tokens = []
         for idx, raw in enumerate(raw_lines):
@@ -579,7 +784,6 @@ class RPLStudioApp:
                 if node["type"] == "block":
                     hdr = node["header"]
 
-                    # if / elif / else chain
                     if hdr.startswith("if "):
                         matched = False
                         if safe_eval(hdr[3:].strip(), line_num):
@@ -607,7 +811,6 @@ class RPLStudioApp:
                     if hdr.startswith("elif ") or hdr == "else":
                         raise RuntimeError(f"Line {line_num}: '{hdr}' without matching 'if'")
 
-                    # for var in iterable:
                     m_for = re.match(r"^for\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+in\s+(.+)$", hdr)
                     if m_for:
                         var_name = m_for.group(1)
@@ -620,7 +823,6 @@ class RPLStudioApp:
                         i += 1
                         continue
 
-                    # while cond:
                     if hdr.startswith("while "):
                         cond_expr = hdr[6:].strip()
                         while self.running and safe_eval(cond_expr, line_num):
@@ -631,14 +833,13 @@ class RPLStudioApp:
                         i += 1
                         continue
 
-                    # def name(args):
                     m_def = re.match(r"^def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(([^)]*)\)$", hdr)
                     if m_def:
                         fn_name = m_def.group(1)
                         params = [p.strip() for p in m_def.group(2).split(",") if p.strip()]
                         body_ref = node["body"]
 
-                        def rpl_func(*args, _params=params, _body=body_ref, _ln=line_num):
+                        def rpl_func(*args, _params=params, _body=body_ref):
                             saved = {}
                             for idx_p, p in enumerate(_params):
                                 if p in env:
@@ -657,11 +858,9 @@ class RPLStudioApp:
 
                     raise RuntimeError(f"Line {line_num}: Unknown block '{hdr}:'")
 
-                # Single Statement
                 stmt = node["text"]
                 i += 1
 
-                # use / import library
                 if stmt.startswith("use ") or stmt.startswith("import "):
                     lib_name = stmt.split(None, 1)[1].strip()
                     if lib_name == "math":
@@ -676,7 +875,6 @@ class RPLStudioApp:
                         raise RuntimeError(f"Line {line_num}: Unknown library '{lib_name}'. Check Library Base!")
                     continue
 
-                # go (print)
                 if stmt == "go" or stmt.startswith("go ") or (stmt.startswith("go(") and stmt.endswith(")")):
                     if "go" in dictionary:
                         self._send_laptop("go", dictionary["go"])
@@ -698,13 +896,11 @@ class RPLStudioApp:
                     time.sleep(0.1)
                     continue
 
-                # Variable assignment: x = expr (not ==)
                 m_assign = re.match(r"^([a-zA-Z_][a-zA-Z0-9_]*)\s*=(?!=)\s*(.+)$", stmt)
                 if m_assign:
                     env[m_assign.group(1)] = safe_eval(m_assign.group(2).strip(), line_num)
                     continue
 
-                # Multi-word command from library.txt
                 matched_cmd = None
                 extra_arg = None
                 for k in sorted_keys:
@@ -723,12 +919,10 @@ class RPLStudioApp:
                     time.sleep(0.15)
                     continue
 
-                # Expression / function call (e.g. greet(name), ui.window(...))
                 if "(" in stmt or stmt in env:
                     safe_eval(stmt, line_num)
                     continue
 
-                # Fallback: multiple single-word library.txt commands
                 for word in stmt.split():
                     if word in dictionary:
                         self._send_laptop(word, dictionary[word])
@@ -755,5 +949,11 @@ if __name__ == "__main__":
         RPLStudioApp(root)
         root.mainloop()
     except Exception:
-        ctypes.windll.user32.MessageBoxW(0, traceback.format_exc(), "RPL Studio Error", 0x10)
+        err_msg = traceback.format_exc()
+        try:
+            with open(CRASH_LOG_PATH, "w", encoding="utf-8") as f:
+                f.write(err_msg)
+        except Exception:
+            pass
+        ctypes.windll.user32.MessageBoxW(0, err_msg, "RPL Studio Error", 0x10)
 # ===END_RPL_PY===
