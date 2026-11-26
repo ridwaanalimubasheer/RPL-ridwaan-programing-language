@@ -1,70 +1,102 @@
 @echo off
-title RPL v3.0 Installer, Updater and EXE Builder
+title RPL v4.0 - Modern UI + Minecraft 3D Engine Builder
 setlocal
 
 set "SELF=%~f0"
 set "RPL_DIR=%USERPROFILE%\RPL"
 
 echo ==================================================
-echo   Installing RPL Studio v3.0 into: %RPL_DIR%
+echo   Installing RPL Studio v4.0 into: %RPL_DIR%
 echo ==================================================
 
-:: Close rpl.exe if running
 taskkill /f /im rpl.exe >nul 2>&1
 timeout /t 1 /nobreak >nul
 
 if not exist "%RPL_DIR%" mkdir "%RPL_DIR%"
 cd /d "%RPL_DIR%"
 
-:: Backup existing library.txt before upgrading
+:: Backup library.txt
 if exist "%RPL_DIR%\library.txt" copy /y "%RPL_DIR%\library.txt" "%RPL_DIR%\library.txt.bak" >nul
 
-:: Delete old version files
+:: Delete old version files (and permanently remove update_url.txt!)
+if exist "%RPL_DIR%\update_url.txt" del /f /q "%RPL_DIR%\update_url.txt"
 if exist "%RPL_DIR%\rpl.exe" del /f /q "%RPL_DIR%\rpl.exe"
 if exist "%RPL_DIR%\rpl_studio.py" del /f /q "%RPL_DIR%\rpl_studio.py"
+if exist "%RPL_DIR%\rpl.ico" del /f /q "%RPL_DIR%\rpl.ico"
 if exist "%RPL_DIR%\RPL_Release.zip" del /f /q "%RPL_DIR%\RPL_Release.zip"
 if exist "%RPL_DIR%\main.rpl" del /f /q "%RPL_DIR%\main.rpl"
 if exist "%RPL_DIR%\README.txt" del /f /q "%RPL_DIR%\README.txt"
 if exist "%RPL_DIR%\library.txt" del /f /q "%RPL_DIR%\library.txt"
 if exist "%RPL_DIR%\build" rmdir /s /q "%RPL_DIR%\build"
 
+:: Find or Auto-Install Python
+set "PY_CMD=python"
 python --version >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] Python is not installed or not in PATH!
+    py -3 --version >nul 2>&1
+    if not errorlevel 1 (
+        set "PY_CMD=py -3"
+    ) else (
+        echo Python not found. Installing Python automatically...
+        winget install -e --id Python.Python.3.12 --silent --accept-package-agreements --accept-source-agreements >nul 2>&1
+        for /d %%P in ("%LOCALAPPDATA%\Programs\Python\Python3*") do set "PATH=%%P;%%P\Scripts;%PATH%"
+        python --version >nul 2>&1
+        if errorlevel 1 (
+            powershell -NoProfile -Command "Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe' -OutFile '%TEMP%\py_setup.exe'"
+            "%TEMP%\py_setup.exe" /quiet InstallAllUsers=0 PrependPath=1 Include_test=0
+            for /d %%P in ("%LOCALAPPDATA%\Programs\Python\Python3*") do set "PATH=%%P;%%P\Scripts;%PATH%"
+        )
+    )
+)
+
+%PY_CMD% --version >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Python is required. Install from python.org and retry.
     pause
     exit /b 1
 )
 
-:: 1. Extract v3.0 rpl_studio.py
+:: 1. Use Wi-Fi to download Modern UI + Game Engine libraries
+echo Downloading Modern UI (customtkinter) and Game Engine (pygame-ce) over Wi-Fi...
+%PY_CMD% -m pip install --upgrade pip pyinstaller customtkinter pillow pygame-ce
+if errorlevel 1 (
+    echo Retrying with standard pygame...
+    %PY_CMD% -m pip install --upgrade pyinstaller customtkinter pillow pygame
+)
+
+:: 2. Extract v4.0 rpl_studio.py
 powershell -NoProfile -Command "$s = '# ===BEGIN_' + 'RPL_PY==='; $e = '# ===END_' + 'RPL_PY==='; $c = Get-Content -LiteralPath $env:SELF -Raw; $m = [regex]::Match($c, '(?s)' + $s + '(.*?)' + $e); Set-Content -Path '%RPL_DIR%\rpl_studio.py' -Value $m.Groups[1].Value.Trim() -Encoding UTF8"
 
-:: 2. Initialize files
-python "%RPL_DIR%\rpl_studio.py" --init
+:: 3. Initialize hello.rpl, minecraft.rpl, library.txt, rpl.ico
+%PY_CMD% "%RPL_DIR%\rpl_studio.py" --init
 
-:: 3. Build rpl.exe
-echo Building rpl.exe v3.0...
-python -m pip install --upgrade pyinstaller
-python -m PyInstaller --noconfirm --onefile --windowed --name rpl --distpath "%RPL_DIR%" --workpath "%RPL_DIR%\build" --specpath "%RPL_DIR%\build" "%RPL_DIR%\rpl_studio.py"
+:: 4. Build rpl.exe (with Modern UI, Game Engine, Python & Icon bundled inside!)
+echo Building rpl.exe v4.0 (please wait)...
+%PY_CMD% -m PyInstaller --noconfirm --onefile --windowed --name rpl --icon="%RPL_DIR%\rpl.ico" --add-data "%RPL_DIR%\rpl.ico;." --collect-all customtkinter --hidden-import=pygame --distpath "%RPL_DIR%" --workpath "%RPL_DIR%\build" --specpath "%RPL_DIR%\build" "%RPL_DIR%\rpl_studio.py"
 if errorlevel 1 (
-    echo [ERROR] Failed to build rpl.exe!
+    echo [ERROR] Build failed!
     pause
     exit /b 1
 )
 
 if exist "%RPL_DIR%\build" rmdir /s /q "%RPL_DIR%\build"
 
-:: 4. Add RPL folder to User PATH
+:: 5. Add RPL folder to User PATH
 powershell -NoProfile -Command "$dir = $env:RPL_DIR; $p = [Environment]::GetEnvironmentVariable('Path','User'); if ($p -notlike \"*$dir*\") { $newP = if ($p) { \"$p;$dir\" } else { $dir }; [Environment]::SetEnvironmentVariable('Path', $newP, 'User') }"
 
-:: 5. Build RPL_Release.zip safely (retries automatically if Antivirus scans rpl.exe)
+:: 6. Desktop Shortcut
+powershell -NoProfile -Command "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut([Environment]::GetFolderPath('Desktop') + '\RPL Studio.lnk'); $s.TargetPath = '%RPL_DIR%\rpl.exe'; $s.WorkingDirectory = '%RPL_DIR%'; $s.IconLocation = '%RPL_DIR%\rpl.ico'; $s.Save()"
+
+:: 7. Build RPL_Release.zip (no update_url.txt!)
 timeout /t 3 /nobreak >nul
-powershell -NoProfile -Command "for ($i=1; $i -le 10; $i++) { try { Compress-Archive -Path '%RPL_DIR%\rpl.exe','%RPL_DIR%\library.txt','%RPL_DIR%\hello.rpl','%RPL_DIR%\update_url.txt','%RPL_DIR%\README.txt' -DestinationPath '%RPL_DIR%\RPL_Release.zip' -Force -ErrorAction Stop; break } catch { Write-Host 'Waiting for Antivirus scan...'; Start-Sleep -Seconds 2 } }"
+powershell -NoProfile -Command "for ($i=1; $i -le 10; $i++) { try { Compress-Archive -Path '%RPL_DIR%\rpl.exe','%RPL_DIR%\library.txt','%RPL_DIR%\hello.rpl','%RPL_DIR%\minecraft.rpl','%RPL_DIR%\README.txt' -DestinationPath '%RPL_DIR%\RPL_Release.zip' -Force -ErrorAction Stop; break } catch { Write-Host 'Waiting for Antivirus scan...'; Start-Sleep -Seconds 2 } }"
 
 echo.
 echo ==================================================
-echo   RPL v3.0 READY!
-echo   EXE:  %RPL_DIR%\rpl.exe
-echo   ZIP:  %RPL_DIR%\RPL_Release.zip
+echo   RPL v4.0 READY!
+echo   - Modern Wi-Fi UI installed!
+echo   - 3D Minecraft demo ready: minecraft.rpl
+echo   - update_url.txt removed!
 echo ==================================================
 
 start "" "%RPL_DIR%\rpl.exe"
@@ -77,22 +109,27 @@ import os
 import re
 import sys
 import time
+import math as py_math
+import struct
 import shutil
 import ctypes
 import random
 import traceback
 import threading
-import urllib.request
-import math as py_math
+import subprocess
 import tkinter as tk
 from tkinter import filedialog, messagebox
+
+os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
+
+import customtkinter as ctk
 
 try:
     import winsound
 except ImportError:
     winsound = None
 
-VERSION = "3.0"
+VERSION = "4.0"
 
 if getattr(sys, "frozen", False):
     APP_DIR = os.path.dirname(sys.executable)
@@ -101,9 +138,10 @@ else:
 
 LIB_PATH = os.path.join(APP_DIR, "library.txt")
 LIB_BACKUP_PATH = os.path.join(APP_DIR, "library.txt.bak")
-DEFAULT_CODE_PATH = os.path.join(APP_DIR, "hello.rpl")
-URL_CONFIG_PATH = os.path.join(APP_DIR, "update_url.txt")
+HELLO_PATH = os.path.join(APP_DIR, "hello.rpl")
+MINECRAFT_PATH = os.path.join(APP_DIR, "minecraft.rpl")
 README_PATH = os.path.join(APP_DIR, "README.txt")
+ICON_PATH = os.path.join(APP_DIR, "rpl.ico")
 CRASH_LOG_PATH = os.path.join(APP_DIR, "rpl_error.log")
 DOWNLOADS_LIB_PATH = os.path.join(os.path.expanduser("~"), "Downloads", "library.txt")
 
@@ -117,77 +155,214 @@ beep:01100010 01100101 01100101 01110000 | Plays a beep sound on the laptop
 stop:01110011 01110100 01101111 01110000 | Sends stop signal
 """
 
-DEFAULT_CODE = """// hello.rpl - Write RPL just like Python!
+DEFAULT_HELLO = """// hello.rpl - Write RPL just like Python!
 use math
 use text
 
 name = "Ridwaan"
-score = 10
+items = ["pickaxe", "wood", "diamond"]
 
 go "Hello " + name + "!"
 go("Uppercase: " + text.upper(name))
+go("Inventory: " + str(items))
 
-if score >= 10:
-    go "Level Up!"
-    hello
-else:
-    go "Keep coding!"
+for i in range(len(items)):
+    go "Slot " + str(i + 1) + ": " + items[i]
 
-for i in range(3):
-    lucky = math.rand(1, 50)
-    go "Lucky number " + str(i + 1) + ": " + str(lucky)
+def roll_loot():
+    n = math.rand(1, 100)
+    if n > 50:
+        return "Rare Diamond (" + str(n) + ")"
+    return "Stone (" + str(n) + ")"
 
-def greet(who):
-    go "Welcome to RPL, " + who + "!"
-
-greet(name)
-open window "Ridwaan App"
+go "Loot Roll -> " + roll_loot()
+hello
 beep
 """
 
-DEFAULT_URL_CFG = """# Optional: Paste your Google Drive share link or raw .txt URL on the line below
-# Example: https://drive.google.com/file/d/YOUR_FILE_ID/view?usp=sharing
+DEFAULT_MINECRAFT = """// minecraft.rpl - Fan-Made 3D Minecraft written in RPL!
+// Controls:
+//   WASD = Walk | Space = Jump | Shift = Sprint | Mouse = Look
+//   Left Click = Break Block | Right Click = Place Block
+//   Keys 1-9 or Scroll = Switch Block | E / ESC = Unlock Mouse
+
+use voxel3d
+use math
+
+go "Building 3D Minecraft world..."
+world = voxel3d.World(title="RPL Craft (Fan-Made Minecraft)", width=1080, height=680)
+
+// Generate hills with grass, dirt, and stone
+for x in range(-9, 10):
+    for z in range(-9, 10):
+        h = int(2 + math.sin(x * 0.45) * 1.4 + math.cos(z * 0.45) * 1.4)
+        for y in range(0, h + 1):
+            if y == h:
+                world.set_block(x, y, z, "grass")
+            elif y >= h - 1:
+                world.set_block(x, y, z, "dirt")
+            else:
+                world.set_block(x, y, z, "stone")
+
+        // Plant trees!
+        if (x == 3 and z == 3) or (x == -4 and z == 2) or (x == 2 and z == -5):
+            for ty in range(1, 4):
+                world.set_block(x, h + ty, z, "wood")
+            for lx in range(-1, 2):
+                for lz in range(-1, 2):
+                    world.set_block(x + lx, h + 4, z + lz, "leaves")
+            world.set_block(x, h + 5, z, "leaves")
+
+// Build a small brick & diamond tower to explore!
+for ty in range(4, 7):
+    world.set_block(0, ty, 5, "brick")
+world.set_block(0, 7, 5, "diamond")
+world.set_block(1, 4, 5, "gold")
+
+// Custom script hook: print when player breaks a diamond!
+def on_block_broken(bx, by, bz, btype):
+    if btype == "diamond":
+        go "Awesome! You mined a DIAMOND at " + str((bx, by, bz)) + "!"
+
+world.on_break(on_block_broken)
+world.set_spawn(0, 7, 0)
+world.run()
 """
 
-DEFAULT_README = """RPL v3.0 (Ridwaan Programming Language)
+DEFAULT_README = """RPL v4.0 (Ridwaan Programming Language)
 =======================================
-1. Double-click rpl.exe to launch RPL Studio.
-2. Write Python-style code in .rpl files (example: hello.rpl).
-3. Updating library.txt:
-   - Download a new library.txt to your Downloads folder and RPL will ask to update automatically!
-   - OR paste your Google Drive link in update_url.txt and click "Check Updates".
-4. Click "Library Base" inside RPL Studio to see all commands & libraries.
+1. Double-click rpl.exe to open RPL Studio (Modern UI + Python + 3D Game Engine built in!).
+2. Switch between hello.rpl and minecraft.rpl at the top, or open any .rpl file.
+3. Click "Library Base" to see how to build 2D games (use game) and 3D Minecraft (use voxel3d).
+4. Updating library.txt: Download a new library.txt to your Downloads folder and click "Update .txt".
 """
+
+
+def generate_rpl_ico(out_path):
+    size = 64
+    canvas = [[(0, 0, 0, 0) for _ in range(size)] for _ in range(size)]
+
+    def dist_rounded(x, y, s, r):
+        cx = max(r, min(s - 1 - r, x))
+        cy = max(r, min(s - 1 - r, y))
+        return ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5
+
+    for y in range(size):
+        for x in range(size):
+            d = dist_rounded(x, y, size, 12)
+            if d <= 12.2:
+                t = (x + y) / (2.0 * (size - 1))
+                br = int(56 * (1 - t) + 52 * t)
+                bg = int(189 * (1 - t) + 211 * t)
+                bb = int(248 * (1 - t) + 153 * t)
+                if d >= 9.2:
+                    canvas[y][x] = (bb, bg, br, 255)
+                else:
+                    ir = int(10 + 8 * t)
+                    ig = int(18 + 12 * t)
+                    ib = int(42 + 16 * t)
+                    canvas[y][x] = (ib, ig, ir, 255)
+
+    font = {
+        "R": ["11110", "10001", "10001", "11110", "10100", "10010", "10001"],
+        "P": ["11110", "10001", "10001", "11110", "10000", "10000", "10000"],
+        "L": ["10000", "10000", "10000", "10000", "10000", "10000", "11111"],
+    }
+    colors = {
+        "R": (248, 189, 56, 255),
+        "P": (255, 255, 255, 255),
+        "L": (153, 211, 52, 255),
+    }
+
+    scale = 3
+    start_x, start_y = 7, 21
+    for idx, ch in enumerate("RPL"):
+        ox = start_x + idx * (5 * scale + 2)
+        col = colors[ch]
+        for ry, row in enumerate(font[ch]):
+            for rx, bit in enumerate(row):
+                if bit == "1":
+                    for dy in range(scale):
+                        for dx in range(scale):
+                            px, py = ox + rx * scale + dx, start_y + ry * scale + dy
+                            if 0 <= px < size and 0 <= py < size:
+                                canvas[py][px] = col
+
+    def downsample(target_s):
+        if target_s == size:
+            return canvas
+        factor = size // target_s
+        out = [[(0, 0, 0, 0) for _ in range(target_s)] for _ in range(target_s)]
+        for y in range(target_s):
+            for x in range(target_s):
+                sb = sg = sr = sa = 0
+                for dy in range(factor):
+                    for dx in range(factor):
+                        b, g, r, a = canvas[y * factor + dy][x * factor + dx]
+                        sb += b; sg += g; sr += r; sa += a
+                n = factor * factor
+                out[y][x] = (sb // n, sg // n, sr // n, sa // n)
+        return out
+
+    sizes = [16, 32, 64]
+    entries, blobs = [], []
+    offset = 6 + 16 * len(sizes)
+    for s in sizes:
+        img = downsample(s)
+        pixels = bytearray()
+        for y in range(s - 1, -1, -1):
+            for x in range(s):
+                pixels.extend(img[y][x])
+        row_mask_bytes = ((s + 31) // 32) * 4
+        mask = b"\x00" * (row_mask_bytes * s)
+        header = struct.pack("<IIIHHIIIIII", 40, s, s * 2, 1, 32, 0, len(pixels) + len(mask), 0, 0, 0, 0)
+        dib = header + bytes(pixels) + mask
+        entries.append(struct.pack("<BBBBHHII", s, s, 0, 0, 1, 32, len(dib), offset))
+        blobs.append(dib)
+        offset += len(dib)
+
+    with open(out_path, "wb") as f:
+        f.write(struct.pack("<HHH", 0, 1, len(sizes)) + b"".join(entries) + b"".join(blobs))
+
+
+def get_icon_path():
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        bundled = os.path.join(sys._MEIPASS, "rpl.ico")
+        if os.path.exists(bundled):
+            return bundled
+    return ICON_PATH
 
 
 def ensure_files():
     defaults = [
         (LIB_PATH, DEFAULT_LIB),
-        (DEFAULT_CODE_PATH, DEFAULT_CODE),
-        (URL_CONFIG_PATH, DEFAULT_URL_CFG),
+        (HELLO_PATH, DEFAULT_HELLO),
+        (MINECRAFT_PATH, DEFAULT_MINECRAFT),
         (README_PATH, DEFAULT_README),
     ]
     for path, content in defaults:
         if not os.path.exists(path):
             with open(path, "w", encoding="utf-8") as f:
                 f.write(content)
+    if not os.path.exists(ICON_PATH):
+        generate_rpl_ico(ICON_PATH)
 
 
 def validate_library_text(content):
     head = content[:500].lower()
     if "<html" in head or "<!doctype" in head:
-        return False, "Downloaded file is an HTML webpage, not a plain .txt file (check Google Drive sharing!)."
+        return False, "File is HTML, not a valid library.txt."
     count = 0
     for raw in content.splitlines():
         line = raw.strip()
         if not line or line.startswith("//") or line.startswith("#"):
             continue
         if ":" in line:
-            word, rest = line.split(":", 1)
-            if word.strip() and rest.strip():
+            w, r = line.split(":", 1)
+            if w.strip() and r.strip():
                 count += 1
     if count == 0:
-        return False, "No valid 'command:binary' lines found in the file."
+        return False, "No valid 'command:binary' lines found."
     return True, count
 
 
@@ -204,34 +379,21 @@ def safe_write_library(new_content):
     return info
 
 
-def normalize_download_url(url):
-    url = url.strip()
-    # Convert normal Google Drive share links into direct download links
-    m = re.search(r"drive\.google\.com/file/d/([a-zA-Z0-9_-]+)", url)
-    if m:
-        return f"https://drive.google.com/uc?export=download&id={m.group(1)}"
-    m2 = re.search(r"drive\.google\.com/open\?id=([a-zA-Z0-9_-]+)", url)
-    if m2:
-        return f"https://drive.google.com/uc?export=download&id={m2.group(1)}"
-    return url
-
-
-def read_configured_url():
-    if not os.path.exists(URL_CONFIG_PATH):
-        return ""
-    with open(URL_CONFIG_PATH, "r", encoding="utf-8") as f:
-        for raw in f:
-            line = raw.strip()
-            if line and not line.startswith("#") and line.startswith(("http://", "https://")):
-                return line
-    return ""
-
-
-def save_configured_url(url):
-    with open(URL_CONFIG_PATH, "w", encoding="utf-8") as f:
-        f.write("# Paste your Google Drive share link or raw .txt URL below:\n")
-        if url.strip():
-            f.write(url.strip() + "\n")
+def parse_library_content(text):
+    dictionary, meta = {}, {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("//") or line.startswith("#"):
+            continue
+        if ":" in line:
+            word, rest = line.split(":", 1)
+            word = word.strip()
+            code, desc = rest.split("|", 1) if "|" in rest else (rest, "")
+            code, desc = code.strip(), desc.strip()
+            if word:
+                dictionary[word] = code
+                meta[word] = {"code": code, "desc": desc}
+    return dictionary, meta
 
 
 def encode_binary(text):
@@ -248,8 +410,9 @@ def decode_binary(binary_str):
     return None
 
 
-def strip_comment(line):
+def replace_slash_comments(line):
     in_quote = None
+    out = []
     i = 0
     while i < len(line):
         ch = line[i]
@@ -258,19 +421,95 @@ def strip_comment(line):
                 in_quote = None
             elif in_quote is None:
                 in_quote = ch
-        elif in_quote is None:
-            if ch == "#":
-                return line[:i].rstrip()
-            if ch == "/" and i + 1 < len(line) and line[i + 1] == "/":
-                return line[:i].rstrip()
+            out.append(ch)
+        elif in_quote is None and ch == "/" and i + 1 < len(line) and line[i + 1] == "/":
+            out.append("#" + line[i + 2:])
+            break
+        else:
+            out.append(ch)
         i += 1
-    return line.rstrip()
+    return "".join(out)
 
 
+def preprocess_rpl(code_text, dictionary):
+    sorted_keys = sorted(dictionary.keys(), key=len, reverse=True)
+    out_lines = []
+    bracket_depth = 0
+
+    for raw in code_text.splitlines():
+        line = replace_slash_comments(raw)
+        stripped = line.strip()
+        indent = line[:len(line) - len(line.lstrip(" \t"))]
+
+        if bracket_depth == 0 and stripped and not stripped.startswith("#"):
+            # Strip trailing inline comment for matching
+            code_part = stripped
+            in_q = None
+            for idx_c, c in enumerate(stripped):
+                if c in ('"', "'") and (idx_c == 0 or stripped[idx_c - 1] != "\\"):
+                    in_q = None if in_q == c else (in_q or c)
+                elif in_q is None and c == "#":
+                    code_part = stripped[:idx_c].strip()
+                    break
+
+            if code_part.startswith("use ") or code_part.startswith("import "):
+                lib_name = code_part.split(None, 1)[1].strip()
+                line = f'{indent}__rpl_use__("{lib_name}")'
+            elif code_part == "go":
+                line = f'{indent}go("")'
+            elif code_part.startswith("go "):
+                arg = code_part[3:].strip()
+                if arg in dictionary:
+                    line = f'{indent}__rpl_go_key__({repr(arg)}, globals())'
+                else:
+                    line = f'{indent}go({arg})'
+            else:
+                # Match library.txt commands
+                matched = None
+                extra_arg = None
+                for k in sorted_keys:
+                    if code_part == k:
+                        matched = k
+                        break
+                    elif code_part.startswith(k + " "):
+                        rest = code_part[len(k):].strip()
+                        if (rest.startswith('"') and rest.endswith('"')) or (rest.startswith("'") and rest.endswith("'")):
+                            matched = k
+                            extra_arg = rest
+                            break
+                if matched:
+                    if extra_arg:
+                        line = f'{indent}__rpl_cmd__({repr(matched)}, {extra_arg})'
+                    else:
+                        line = f'{indent}__rpl_cmd__({repr(matched)})'
+
+        out_lines.append(line)
+        # Update bracket depth (outside quotes/comments)
+        in_q = None
+        for idx_c, c in enumerate(line):
+            if c in ('"', "'") and (idx_c == 0 or line[idx_c - 1] != "\\"):
+                in_q = None if in_q == c else (in_q or c)
+            elif in_q is None:
+                if c == "#":
+                    break
+                if c in "([{":
+                    bracket_depth += 1
+                elif c in ")]}":
+                    bracket_depth = max(0, bracket_depth - 1)
+
+    return "\n".join(out_lines)
+
+
+# ==========================================
+# RPL STANDARD & GAME LIBRARIES
+# ==========================================
 class MathLib:
     pi = round(py_math.pi, 5)
     def rand(self, a=1, b=10): return random.randint(int(a), int(b))
     def sqrt(self, x): return py_math.sqrt(x)
+    def sin(self, x): return py_math.sin(x)
+    def cos(self, x): return py_math.cos(x)
+    def floor(self, x): return py_math.floor(x)
     def round(self, x): return round(x)
     def abs(self, x): return abs(x)
 
@@ -288,672 +527,568 @@ class TimeLib:
     def wait(self, ms=500): time.sleep(min(float(ms) / 1000.0, 5.0))
 
 
+class Game2DLib:
+    def __init__(self):
+        import pygame
+        self.pg = pygame
+        self.screen = None
+        self.clock = None
+        self.running = False
+        self.fonts = {}
+
+    def start(self, width=900, height=600, title="RPL Game", fps=60):
+        self.pg.init()
+        self.screen = self.pg.display.set_mode((int(width), int(height)))
+        self.pg.display.set_caption(str(title))
+        ico = get_icon_path()
+        if os.path.exists(ico):
+            try:
+                self.pg.display.set_icon(self.pg.image.load(ico))
+            except Exception:
+                pass
+        self.clock = self.pg.time.Clock()
+        self.fps = int(fps)
+        self.running = True
+
+    def clear(self, r=15, g=23, b=42):
+        if self.screen:
+            self.screen.fill((int(r), int(g), int(b)))
+
+    def rect(self, x, y, w, h, color=(52, 211, 153)):
+        if self.screen:
+            self.pg.draw.rect(self.screen, color, (int(x), int(y), int(w), int(h)))
+
+    def circle(self, x, y, radius, color=(56, 189, 248)):
+        if self.screen:
+            self.pg.draw.circle(self.screen, color, (int(x), int(y)), int(radius))
+
+    def text(self, msg, x, y, size=24, color=(255, 255, 255)):
+        if self.screen:
+            s = int(size)
+            if s not in self.fonts:
+                self.fonts[s] = self.pg.font.SysFont("consolas", s, bold=True)
+            surf = self.fonts[s].render(str(msg), True, color)
+            self.screen.blit(surf, (int(x), int(y)))
+
+    def key(self, name):
+        keys = self.pg.key.get_pressed()
+        kmap = {
+            "w": self.pg.K_w, "a": self.pg.K_a, "s": self.pg.K_s, "d": self.pg.K_d,
+            "up": self.pg.K_UP, "down": self.pg.K_DOWN, "left": self.pg.K_LEFT, "right": self.pg.K_RIGHT,
+            "space": self.pg.K_SPACE, "shift": self.pg.K_LSHIFT, "esc": self.pg.K_ESCAPE,
+            "1": self.pg.K_1, "2": self.pg.K_2, "3": self.pg.K_3, "4": self.pg.K_4,
+        }
+        code = kmap.get(str(name).lower())
+        return bool(code and keys[code])
+
+    def mouse_x(self): return self.pg.mouse.get_pos()[0]
+    def mouse_y(self): return self.pg.mouse.get_pos()[1]
+    def mouse_down(self, btn=1): return bool(self.pg.mouse.get_pressed()[btn - 1])
+    def stop(self): self.running = False
+
+    def loop(self, update_fn):
+        if not self.screen:
+            self.start()
+        while self.running:
+            dt = self.clock.tick(self.fps) / 1000.0
+            for ev in self.pg.event.get():
+                if ev.type == self.pg.QUIT:
+                    self.running = False
+            update_fn(dt)
+            self.pg.display.flip()
+        self.pg.quit()
+
+
+class Voxel3DWorld:
+    PALETTE = {
+        "grass":   ((94, 186, 68), (134, 96, 67)),   # (top_color, side_color)
+        "dirt":    ((134, 96, 67), (120, 84, 58)),
+        "stone":   ((132, 136, 142), (118, 122, 128)),
+        "wood":    ((166, 126, 76), (118, 82, 46)),
+        "leaves":  ((54, 142, 58), (44, 120, 48)),
+        "diamond": ((68, 228, 236), (52, 200, 212)),
+        "gold":    ((248, 210, 62), (222, 182, 44)),
+        "brick":   ((178, 78, 62), (156, 66, 52)),
+        "water":   ((56, 136, 236), (48, 120, 214)),
+    }
+    HOTBAR_ORDER = ["grass", "dirt", "stone", "wood", "leaves", "brick", "gold", "diamond", "water"]
+
+    def __init__(self, title="RPL Craft (Fan-Made Minecraft)", width=1080, height=680):
+        self.title = str(title)
+        self.width = int(width)
+        self.height = int(height)
+        self.blocks = {}
+        self.spawn = [0.5, 6.0, 0.5]
+        self.on_update_cb = None
+        self.on_break_cb = None
+        self.on_place_cb = None
+
+    def set_block(self, x, y, z, btype="grass"):
+        btype = str(btype).lower()
+        if btype == "air":
+            self.blocks.pop((int(x), int(y), int(z)), None)
+        else:
+            self.blocks[(int(x), int(y), int(z))] = btype
+
+    def get_block(self, x, y, z):
+        return self.blocks.get((int(x), int(y), int(z)), "air")
+
+    def remove_block(self, x, y, z):
+        return self.blocks.pop((int(x), int(y), int(z)), None)
+
+    def set_spawn(self, x, y, z):
+        self.spawn = [float(x) + 0.5, float(y), float(z) + 0.5]
+
+    def on_update(self, fn): self.on_update_cb = fn
+    def on_break(self, fn): self.on_break_cb = fn
+    def on_place(self, fn): self.on_place_cb = fn
+
+    def _clip_near(self, poly, near=0.15):
+        out = []
+        n = len(poly)
+        for i in range(n):
+            a = poly[i]
+            b = poly[(i + 1) % n]
+            a_in = a[2] >= near
+            b_in = b[2] >= near
+            if a_in:
+                out.append(a)
+                if not b_in:
+                    t = (near - a[2]) / (b[2] - a[2])
+                    out.append((a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]), near))
+            elif b_in:
+                t = (near - a[2]) / (b[2] - a[2])
+                out.append((a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]), near))
+        return out
+
+    def _collides(self, px, py, pz):
+        r = 0.28
+        h = 1.75
+        min_x = py_math.floor(px - r)
+        max_x = py_math.floor(px + r)
+        min_y = py_math.floor(py)
+        max_y = py_math.floor(py + h)
+        min_z = py_math.floor(pz - r)
+        max_z = py_math.floor(pz + r)
+        for bx in range(min_x, max_x + 1):
+            for by in range(min_y, max_y + 1):
+                for bz in range(min_z, max_z + 1):
+                    if (bx, by, bz) in self.blocks:
+                        return True
+        return False
+
+    def _raycast(self, cx, cy, cz, lx, ly, lz, max_dist=5.5):
+        prev = None
+        step = 0.05
+        t = 0.2
+        while t <= max_dist:
+            px, py, pz = cx + lx * t, cy + ly * t, cz + lz * t
+            cell = (py_math.floor(px), py_math.floor(py), py_math.floor(pz))
+            if cell in self.blocks:
+                return cell, prev
+            prev = cell
+            t += step
+        return None, None
+
+    def run(self):
+        import pygame
+        pygame.init()
+        screen = pygame.display.set_mode((self.width, self.height))
+        pygame.display.set_caption(self.title)
+        ico = get_icon_path()
+        if os.path.exists(ico):
+            try:
+                pygame.display.set_icon(pygame.image.load(ico))
+            except Exception:
+                pass
+
+        clock = pygame.time.Clock()
+        font = pygame.font.SysFont("consolas", 15, bold=True)
+        font_sm = pygame.font.SysFont("consolas", 12, bold=True)
+
+        px, py, pz = list(self.spawn)
+        vy = 0.0
+        on_ground = False
+        yaw = 0.0
+        pitch = -0.15
+        selected_idx = 0
+
+        mouse_locked = True
+        pygame.mouse.set_visible(False)
+        pygame.event.set_grab(True)
+        pygame.mouse.get_rel()
+
+        half_w = self.width / 2.0
+        half_h = self.height / 2.0
+        fov = self.height * 0.85
+
+        # Face definitions: (normal, 4 corners offsets, shade multiplier, is_top)
+        FACES = [
+            ((0, 1, 0),  ((0, 1, 0), (0, 1, 1), (1, 1, 1), (1, 1, 0)), 1.00, True),
+            ((0, -1, 0), ((0, 0, 0), (1, 0, 0), (1, 0, 1), (0, 0, 1)), 0.55, False),
+            ((1, 0, 0),  ((1, 0, 0), (1, 1, 0), (1, 1, 1), (1, 0, 1)), 0.82, False),
+            ((-1, 0, 0), ((0, 0, 1), (0, 1, 1), (0, 1, 0), (0, 0, 0)), 0.82, False),
+            ((0, 0, 1),  ((1, 0, 1), (1, 1, 1), (0, 1, 1), (0, 0, 1)), 0.70, False),
+            ((0, 0, -1), ((0, 0, 0), (0, 1, 0), (1, 1, 0), (1, 0, 0)), 0.70, False),
+        ]
+
+        sky = (128, 194, 255)
+        running = True
+
+        while running:
+            dt = min(clock.tick(60) / 1000.0, 0.05)
+
+            for ev in pygame.event.get():
+                if ev.type == pygame.QUIT:
+                    running = False
+                elif ev.type == pygame.KEYDOWN:
+                    if ev.key in (pygame.K_ESCAPE, pygame.K_e):
+                        mouse_locked = not mouse_locked
+                        pygame.mouse.set_visible(not mouse_locked)
+                        pygame.event.set_grab(mouse_locked)
+                        pygame.mouse.get_rel()
+                    elif pygame.K_1 <= ev.key <= pygame.K_9:
+                        selected_idx = ev.key - pygame.K_1
+                elif ev.type == pygame.MOUSEWHEEL:
+                    selected_idx = (selected_idx - ev.y) % len(self.HOTBAR_ORDER)
+                elif ev.type == pygame.MOUSEBUTTONDOWN:
+                    if not mouse_locked:
+                        mouse_locked = True
+                        pygame.mouse.set_visible(False)
+                        pygame.event.set_grab(True)
+                        pygame.mouse.get_rel()
+                    else:
+                        eye_y = py + 1.55
+                        lx = py_math.sin(yaw) * py_math.cos(pitch)
+                        ly = py_math.sin(pitch)
+                        lz = py_math.cos(yaw) * py_math.cos(pitch)
+                        hit, prev = self._raycast(px, eye_y, pz, lx, ly, lz)
+                        if ev.button == 1 and hit:
+                            btype = self.blocks.pop(hit, None)
+                            if btype and self.on_break_cb:
+                                self.on_break_cb(hit[0], hit[1], hit[2], btype)
+                        elif ev.button == 3 and prev:
+                            btype = self.HOTBAR_ORDER[selected_idx]
+                            self.blocks[prev] = btype
+                            if self._collides(px, py, pz):
+                                self.blocks.pop(prev, None)
+                            elif self.on_place_cb:
+                                self.on_place_cb(prev[0], prev[1], prev[2], btype)
+
+            # Mouse Look
+            if mouse_locked:
+                mx, my = pygame.mouse.get_rel()
+                yaw += mx * 0.0028
+                pitch = max(-1.45, min(1.45, pitch - my * 0.0028))
+
+            # Movement
+            keys = pygame.key.get_pressed()
+            speed = 7.2 if keys[pygame.K_LSHIFT] else 4.6
+            fx, fz = py_math.sin(yaw), py_math.cos(yaw)
+            rx, rz = py_math.cos(yaw), -py_math.sin(yaw)
+            mv_x = mv_z = 0.0
+            if keys[pygame.K_w]: mv_x += fx; mv_z += fz
+            if keys[pygame.K_s]: mv_x -= fx; mv_z -= fz
+            if keys[pygame.K_d]: mv_x += rx; mv_z += rz
+            if keys[pygame.K_a]: mv_x -= rx; mv_z -= rz
+
+            mag = (mv_x * mv_x + mv_z * mv_z) ** 0.5
+            if mag > 0:
+                mv_x = (mv_x / mag) * speed * dt
+                mv_z = (mv_z / mag) * speed * dt
+                if not self._collides(px + mv_x, py, pz):
+                    px += mv_x
+                if not self._collides(px, py, pz + mv_z):
+                    pz += mv_z
+
+            # Gravity & Jump
+            if on_ground and keys[pygame.K_SPACE]:
+                vy = 8.4
+                on_ground = False
+
+            vy -= 22.0 * dt
+            dy_step = vy * dt
+            if not self._collides(px, py + dy_step, pz):
+                py += dy_step
+                on_ground = False
+            else:
+                if vy < 0:
+                    on_ground = True
+                vy = 0.0
+
+            if py < -15:
+                px, py, pz = list(self.spawn)
+                vy = 0.0
+
+            if self.on_update_cb:
+                self.on_update_cb(self, dt)
+
+            # Camera / Raycast
+            cam_x, cam_y, cam_z = px, py + 1.55, pz
+            sin_y, cos_y = py_math.sin(yaw), py_math.cos(yaw)
+            sin_p, cos_p = py_math.sin(pitch), py_math.cos(pitch)
+            lx = sin_y * cos_p
+            ly = sin_p
+            lz = cos_y * cos_p
+            target_hit, _ = self._raycast(cam_x, cam_y, cam_z, lx, ly, lz)
+
+            # Render Sky & Ground Horizon
+            screen.fill(sky)
+
+            # Collect & Cull Visible Faces
+            render_list = []
+            max_r2 = 100.0  # 10 blocks radius
+
+            for (bx, by, bz), btype in self.blocks.items():
+                dx_c = (bx + 0.5) - cam_x
+                dy_c = (by + 0.5) - cam_y
+                dz_c = (bz + 0.5) - cam_z
+                dist2 = dx_c * dx_c + dy_c * dy_c + dz_c * dz_c
+                if dist2 > max_r2:
+                    continue
+                # Frustum roughly in front of camera
+                if dist2 > 2.5 and (dx_c * lx + dy_c * ly + dz_c * lz) < -0.35 * (dist2 ** 0.5):
+                    continue
+
+                top_col, side_col = self.PALETTE.get(btype, ((200, 200, 200), (160, 160, 160)))
+                is_target = (bx, by, bz) == target_hit
+
+                for (nx, ny, nz), corners, shade, is_top in FACES:
+                    # Neighbor occlusion culling
+                    if (bx + nx, by + ny, bz + nz) in self.blocks:
+                        continue
+                    # Backface culling
+                    fcx = bx + 0.5 + nx * 0.5
+                    fcy = by + 0.5 + ny * 0.5
+                    fcz = bz + 0.5 + nz * 0.5
+                    if (cam_x - fcx) * nx + (cam_y - fcy) * ny + (cam_z - fcz) * nz <= 0:
+                        continue
+
+                    # Transform 4 corners into camera space
+                    cam_poly = []
+                    for ox, oy, oz in corners:
+                        wx = (bx + ox) - cam_x
+                        wy = (by + oy) - cam_y
+                        wz = (bz + oz) - cam_z
+                        x1 = wx * cos_y - wz * sin_y
+                        z1 = wx * sin_y + wz * cos_y
+                        y2 = wy * cos_p - z1 * sin_p
+                        z2 = wy * sin_p + z1 * cos_p
+                        cam_poly.append((x1, y2, z2))
+
+                    clipped = self._clip_near(cam_poly, 0.15)
+                    if len(clipped) < 3:
+                        continue
+
+                    pts2d = [(half_w + (vx / vz) * fov, half_h - (vy_ / vz) * fov) for vx, vy_, vz in clipped]
+
+                    base = top_col if is_top else side_col
+                    fog = min(0.6, max(0.0, (dist2 - 36.0) / 85.0))
+                    r = int((base[0] * shade) * (1 - fog) + sky[0] * fog)
+                    g = int((base[1] * shade) * (1 - fog) + sky[1] * fog)
+                    b = int((base[2] * shade) * (1 - fog) + sky[2] * fog)
+                    fdist2 = (fcx - cam_x) ** 2 + (fcy - cam_y) ** 2 + (fcz - cam_z) ** 2
+                    render_list.append((fdist2, pts2d, (r, g, b), is_target))
+
+            # Painter's Algorithm (Back-to-Front)
+            render_list.sort(key=lambda item: item[0], reverse=True)
+            for _, pts2d, col, is_target in render_list:
+                pygame.draw.polygon(screen, col, pts2d)
+                pygame.draw.polygon(screen, (255, 255, 255) if is_target else (30, 35, 45), pts2d, 2 if is_target else 1)
+
+            # Crosshair
+            pygame.draw.line(screen, (255, 255, 255), (half_w - 8, half_h), (half_w + 8, half_h), 2)
+            pygame.draw.line(screen, (255, 255, 255), (half_w, half_h - 8), (half_w, half_h + 8), 2)
+
+            # Top HUD
+            hud = f"RPL Craft | FPS: {int(clock.get_fps())} | XYZ: ({int(px)}, {int(py)}, {int(pz)}) | {'[ESC] Unlock Mouse' if mouse_locked else 'Click Window to Play'}"
+            hud_surf = font.render(hud, True, (255, 255, 255))
+            pygame.draw.rect(screen, (15, 23, 42), (8, 8, hud_surf.get_width() + 16, 28), border_radius=6)
+            screen.blit(hud_surf, (16, 13))
+
+            # Hotbar (1-9)
+            slot_w, slot_h, gap = 52, 52, 6
+            total_w = len(self.HOTBAR_ORDER) * (slot_w + gap) - gap
+            start_x = (self.width - total_w) // 2
+            bar_y = self.height - 68
+            for idx, bname in enumerate(self.HOTBAR_ORDER):
+                sx = start_x + idx * (slot_w + gap)
+                is_sel = idx == selected_idx
+                pygame.draw.rect(screen, (30, 41, 59), (sx, bar_y, slot_w, slot_h), border_radius=6)
+                pygame.draw.rect(screen, (56, 189, 248) if is_sel else (71, 85, 105), (sx, bar_y, slot_w, slot_h), 3 if is_sel else 1, border_radius=6)
+                top_c, _ = self.PALETTE[bname]
+                pygame.draw.rect(screen, top_c, (sx + 12, bar_y + 10, 28, 22), border_radius=3)
+                num_s = font_sm.render(str(idx + 1), True, (255, 255, 255))
+                screen.blit(num_s, (sx + 4, bar_y + 2))
+                lbl_s = font_sm.render(bname[:5], True, (226, 232, 240))
+                screen.blit(lbl_s, (sx + 6, bar_y + 34))
+
+            pygame.display.flip()
+
+        pygame.quit()
+
+
+class Voxel3DLib:
+    World = Voxel3DWorld
+
+
 class UILib:
-    def __init__(self, app):
-        self.app = app
+    def __init__(self, emit_fn):
+        self.emit = emit_fn
     def window(self, title="RPL Window", message="Opened from RPL ui.window()"):
-        self.app.root.after(0, self.app._open_rpl_window, str(title), str(message))
+        self.emit("UIWIN", f"{title}||{message}")
     def alert(self, title="RPL Alert", message="Hello!"):
-        self.app.root.after(0, messagebox.showinfo, str(title), str(message))
+        self.emit("ALERT", f"{title}||{message}")
 
 
+# ==========================================
+# SHARED RPL CODE RUNNER (In-process or Subprocess)
+# ==========================================
+def run_rpl_code(code_text, lib_text, emit_fn):
+    dictionary, _ = parse_library_content(lib_text)
+    env = {"__builtins__": {
+        "print": print, "str": str, "int": int, "float": float, "bool": bool,
+        "list": list, "dict": dict, "set": set, "tuple": tuple,
+        "len": len, "range": range, "enumerate": enumerate, "zip": zip,
+        "min": min, "max": max, "abs": abs, "round": round, "sum": sum, "sorted": sorted,
+        "isinstance": isinstance, "object": object, "super": super,
+        "Exception": Exception, "ValueError": ValueError, "KeyError": KeyError,
+        "__build_class__": __build_class__, "__name__": "__main__",
+    }}
+
+    def send_bin(word, binary, extra=""):
+        emit_fn("BIN", f"{word}|{binary}|{extra}")
+
+    def rpl_go(*args):
+        if "go" in dictionary:
+            send_bin("go", dictionary["go"])
+        out_str = " ".join(str(a) for a in args)
+        emit_fn("GO", out_str)
+        if out_str:
+            send_bin(f'"{out_str}"', encode_binary(out_str))
+
+    def rpl_go_key(key, scope):
+        if key in scope:
+            rpl_go(scope[key])
+        else:
+            if "go" in dictionary:
+                send_bin("go", dictionary["go"])
+            b = dictionary[key]
+            emit_fn("GO", b)
+            send_bin(key, b)
+
+    def rpl_cmd(cmd, extra=""):
+        if cmd in dictionary:
+            send_bin(cmd, dictionary[cmd], str(extra))
+
+    def rpl_use(lib_name):
+        if lib_name == "math":
+            env["math"] = MathLib()
+        elif lib_name == "text":
+            env["text"] = TextLib()
+        elif lib_name == "time":
+            env["time"] = TimeLib()
+        elif lib_name == "ui":
+            env["ui"] = UILib(emit_fn)
+        elif lib_name == "game":
+            env["game"] = Game2DLib()
+        elif lib_name == "voxel3d":
+            env["voxel3d"] = Voxel3DLib()
+        else:
+            raise ImportError(f"Unknown RPL library '{lib_name}'. Check Library Base!")
+
+    env["go"] = rpl_go
+    env["__rpl_go_key__"] = rpl_go_key
+    env["__rpl_cmd__"] = rpl_cmd
+    env["__rpl_use__"] = rpl_use
+
+    py_code = preprocess_rpl(code_text, dictionary)
+    compiled = compile(py_code, "<rpl>", "exec")
+    exec(compiled, env, env)
+
+
+def run_cli_subprocess(rpl_file_path):
+    with open(rpl_file_path, "r", encoding="utf-8") as f:
+        code_text = f.read()
+    lib_text = DEFAULT_LIB
+    if os.path.exists(LIB_PATH):
+        with open(LIB_PATH, "r", encoding="utf-8") as f:
+            lib_text = f.read()
+
+    def emit(kind, payload):
+        safe_payload = str(payload).replace("\n", "\\n")
+        print(f"__RPL_{kind}__:{safe_payload}", flush=True)
+
+    try:
+        run_rpl_code(code_text, lib_text, emit)
+        emit("DONE", "Done.")
+    except Exception as e:
+        emit("ERR", f"{type(e).__name__}: {e}")
+
+
+# ==========================================
+# MODERN WI-FI UI (CustomTkinter)
+# ==========================================
 class RPLStudioApp:
     def __init__(self, root):
         self.root = root
         self.root.title(f"RPL Studio v{VERSION} - Ridwaan Programming Language")
-        self.root.geometry("1260x760")
-        self.root.configure(bg="#090d1a")
-        self.running = False
-        self.current_rpl_path = DEFAULT_CODE_PATH
+        self.root.geometry("1320x790")
+        self.game_proc = None
+        self.current_rpl_path = HELLO_PATH
         self.pure_binary_var = tk.BooleanVar(value=True)
 
         ensure_files()
+        ico = get_icon_path()
+        if os.path.exists(ico):
+            try:
+                self.root.iconbitmap(ico)
+            except Exception:
+                pass
+
         self._build_ui()
         self.load_files()
 
         self.root.bind("<Control-s>", lambda e: self.save_files())
-        self.root.after(400, self.startup_update_check)
+        self.root.after(450, self.check_downloads_update)
 
     def _build_ui(self):
-        top = tk.Frame(self.root, bg="#11182d", pady=10, padx=16)
-        top.pack(fill="x")
+        # Top Navigation Bar
+        top = ctk.CTkFrame(self.root, height=64, corner_radius=12, fg_color="#11182d")
+        top.pack(fill="x", padx=14, pady=(12, 8))
 
-        title_frame = tk.Frame(top, bg="#11182d")
-        title_frame.pack(side="left")
-        tk.Label(
-            title_frame, text=f"RPL STUDIO v{VERSION}", fg="#38bdf8", bg="#11182d",
-            font=("Segoe UI", 16, "bold")
-        ).pack(anchor="w")
-        tk.Label(
-            title_frame, text="Reliable Python-style .rpl IDE | Auto-Updating library.txt & Real 8-Bit Binary",
-            fg="#8f9ec9", bg="#11182d", font=("Segoe UI", 9)
-        ).pack(anchor="w")
+        left_box = ctk.CTkFrame(top, fg_color="transparent")
+        left_box.pack(side="left", padx=14, pady=8)
+        ctk.CTkLabel(left_box, text=f"RPL STUDIO v{VERSION}", font=ctk.CTkFont("Segoe UI", 18, "bold"), text_color="#38bdf8").pack(anchor="w")
+        ctk.CTkLabel(left_box, text="Python-Strength Coding  |  3D Minecraft & 2D Game Engine  |  Real 8-Bit Binary", font=ctk.CTkFont("Segoe UI", 11), text_color="#94a3b8").pack(anchor="w")
 
-        btn_frame = tk.Frame(top, bg="#11182d")
-        btn_frame.pack(side="right")
+        right_box = ctk.CTkFrame(top, fg_color="transparent")
+        right_box.pack(side="right", padx=12, pady=10)
 
-        self._btn(btn_frame, "Library Base", self.open_library_base, "#2563eb", "#ffffff").pack(side="left", padx=3)
-        self._btn(btn_frame, "Check Updates", self.open_update_dialog, "#0f766e", "#ffffff").pack(side="left", padx=3)
-        self._btn(btn_frame, "Reload .txt", self.reload_library_from_disk, "#1e294d", "#e8eefc").pack(side="left", padx=3)
-        self._btn(btn_frame, "Open .rpl", self.open_rpl_file, "#1e294d", "#e8eefc").pack(side="left", padx=3)
-        self._btn(btn_frame, "Save (Ctrl+S)", self.save_files, "#1e294d", "#e8eefc").pack(side="left", padx=3)
-        self._btn(btn_frame, "Stop", self.stop_rpl, "#3b1724", "#fb7185").pack(side="left", padx=3)
-        self._btn(btn_frame, "Run RPL", self.start_rpl, "#10b981", "#041f13").pack(side="left", padx=3)
-
-        main = tk.Frame(self.root, bg="#090d1a", padx=14, pady=14)
-        main.pack(fill="both", expand=True)
-        main.columnconfigure(0, weight=1)
-        main.columnconfigure(1, weight=1)
-        main.columnconfigure(2, weight=1)
-        main.rowconfigure(0, weight=1)
-
-        c1 = self._card(main, "library.txt (Real 8-Bit Binary Commands)")
-        c1.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        self.lib_text = self._editor(c1, fg="#fbbf24")
-        self.lib_status = tk.Label(c1, text="0 commands loaded", bg="#11182d", fg="#8f9ec9", anchor="w", padx=10, pady=6, font=("Segoe UI", 9))
-        self.lib_status.pack(fill="x")
-
-        c2 = tk.Frame(main, bg="#11182d", highlightbackground="#273663", highlightthickness=1)
-        c2.grid(row=0, column=1, sticky="nsew", padx=4)
-        self.code_header = tk.Label(
-            c2, text="hello.rpl (Python-style RPL Code)", bg="#17203d", fg="#e8eefc",
-            font=("Segoe UI", 10, "bold"), anchor="w", padx=12, pady=8
+        self.file_switch = ctk.CTkOptionMenu(
+            right_box, values=["hello.rpl", "minecraft.rpl", "Open Other..."],
+            command=self.on_file_menu, width=140, fg_color="#1e293b", button_color="#334155"
         )
-        self.code_header.pack(fill="x")
-        self.code_text = self._editor(c2, fg="#e2e8f0")
-        tk.Label(c2, text='Python style: name = "Ridwaan"  |  if/else  |  for  |  def  |  go', bg="#11182d", fg="#8f9ec9", anchor="w", padx=10, pady=6, font=("Segoe UI", 9)).pack(fill="x")
-
-        c3 = tk.Frame(main, bg="#090d1a")
-        c3.grid(row=0, column=2, sticky="nsew", padx=(8, 0))
-        c3.rowconfigure(0, weight=1)
-        c3.rowconfigure(1, weight=1)
-        c3.columnconfigure(0, weight=1)
-
-        top_r = tk.Frame(c3, bg="#11182d", highlightbackground="#273663", highlightthickness=1)
-        top_r.grid(row=0, column=0, sticky="nsew", pady=(0, 8))
-        top_r_head = tk.Frame(top_r, bg="#17203d")
-        top_r_head.pack(fill="x")
-        tk.Label(
-            top_r_head, text="Sent to Laptop (Binary Signal)", bg="#17203d", fg="#e8eefc",
-            font=("Segoe UI", 10, "bold"), anchor="w", padx=12, pady=8
-        ).pack(side="left")
-        tk.Checkbutton(
-            top_r_head, text="Pure Binary Only", variable=self.pure_binary_var,
-            bg="#17203d", fg="#34d399", selectcolor="#090d1a",
-            activebackground="#17203d", activeforeground="#34d399",
-            font=("Segoe UI", 8, "bold")
-        ).pack(side="right", padx=10)
-
-        led_bar = tk.Frame(top_r, bg="#070b15", padx=10, pady=8)
-        led_bar.pack(fill="x")
-        tk.Label(led_bar, text="8-Bit:", bg="#070b15", fg="#8f9ec9", font=("Segoe UI", 9)).pack(side="left", padx=(0, 6))
-        self.leds = []
-        for _ in range(8):
-            lbl = tk.Label(led_bar, text="0", width=2, bg="#141d38", fg="#4f6299", font=("Consolas", 11, "bold"), relief="flat", pady=3)
-            lbl.pack(side="left", padx=2)
-            self.leds.append(lbl)
-
-        self.laptop_log = self._readonly_log(top_r, fg="#34d399")
-
-        bot_r = self._card(c3, "Screen Output (go)")
-        bot_r.grid(row=1, column=0, sticky="nsew", pady=(4, 0))
-        self.screen_log = self._readonly_log(bot_r, fg="#e2e8f0")
-
-    def _btn(self, parent, text, cmd, bg, fg):
-        return tk.Button(
-            parent, text=text, command=cmd, bg=bg, fg=fg,
-            font=("Segoe UI", 9, "bold"), relief="flat", padx=9, pady=5, cursor="hand2"
-        )
-
-    def _card(self, parent, title):
-        frame = tk.Frame(parent, bg="#11182d", highlightbackground="#273663", highlightthickness=1)
-        tk.Label(
-            frame, text=title, bg="#17203d", fg="#e8eefc",
-            font=("Segoe UI", 10, "bold"), anchor="w", padx=12, pady=8
-        ).pack(fill="x")
-        return frame
-
-    def _editor(self, parent, fg):
-        txt = tk.Text(
-            parent, bg="#080c18", fg=fg, insertbackground="#38bdf8",
-            font=("Consolas", 10), relief="flat", padx=10, pady=10, undo=True, wrap="word"
-        )
-        txt.pack(fill="both", expand=True)
-        return txt
-
-    def _readonly_log(self, parent, fg):
-        txt = tk.Text(
-            parent, bg="#060912", fg=fg, font=("Consolas", 10),
-            relief="flat", padx=10, pady=10, state="disabled", wrap="word"
-        )
-        txt.pack(fill="both", expand=True)
-        return txt
-
-    # --- Auto Update Logic (Downloads folder + Google Drive / URL) ---
-    def startup_update_check(self):
-        # 1. Check if user downloaded a newer library.txt normally into Downloads
-        if os.path.exists(DOWNLOADS_LIB_PATH) and os.path.exists(LIB_PATH):
-            try:
-                dl_mtime = os.path.getmtime(DOWNLOADS_LIB_PATH)
-                cur_mtime = os.path.getmtime(LIB_PATH)
-                if dl_mtime > cur_mtime + 2:
-                    with open(DOWNLOADS_LIB_PATH, "r", encoding="utf-8") as f:
-                        new_content = f.read()
-                    ok, count = validate_library_text(new_content)
-                    if ok:
-                        if messagebox.askyesno(
-                            "New library.txt Found!",
-                            f"A newer library.txt ({count} commands) was found in your Downloads folder.\n\nUpdate RPL's library.txt now?"
-                        ):
-                            safe_write_library(new_content)
-                            self.reload_library_from_disk(silent=True)
-                            self._append_log(self.screen_log, f"[Updater] Updated library.txt from Downloads ({count} commands).")
-                            return
-            except Exception:
-                pass
-
-        # 2. Check configured online URL silently in background
-        url = read_configured_url()
-        if url:
-            threading.Thread(target=self._download_url_worker, args=(url, True), daemon=True).start()
-
-    def open_update_dialog(self):
-        win = tk.Toplevel(self.root)
-        win.title("Update library.txt")
-        win.geometry("580x320")
-        win.configure(bg="#11182d")
-
-        tk.Label(win, text="Update library.txt", bg="#11182d", fg="#38bdf8", font=("Segoe UI", 14, "bold")).pack(anchor="w", padx=18, pady=(16, 4))
-        tk.Label(
-            win,
-            text="Option 1: Import a library.txt you downloaded normally to your Downloads folder.\nOption 2: Paste a Google Drive share link (set to 'Anyone with the link') or raw .txt URL.",
-            bg="#11182d", fg="#cbd5e1", justify="left", font=("Segoe UI", 9)
-        ).pack(anchor="w", padx=18, pady=(0, 12))
-
-        url_entry = tk.Entry(win, bg="#080c18", fg="#e8eefc", insertbackground="#38bdf8", font=("Consolas", 10), relief="flat")
-        url_entry.insert(0, read_configured_url())
-        url_entry.pack(fill="x", padx=18, ipady=7)
-
-        status_lbl = tk.Label(win, text="", bg="#11182d", fg="#34d399", font=("Segoe UI", 9))
-        status_lbl.pack(anchor="w", padx=18, pady=8)
-
-        btn_row = tk.Frame(win, bg="#11182d")
-        btn_row.pack(fill="x", padx=18, pady=10)
-
-        def import_downloads():
-            if not os.path.exists(DOWNLOADS_LIB_PATH):
-                path = filedialog.askopenfilename(title="Select downloaded library.txt", initialdir=os.path.join(os.path.expanduser("~"), "Downloads"), filetypes=[("Text Files", "*.txt")])
-                if not path:
-                    return
-            else:
-                path = DOWNLOADS_LIB_PATH
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    content = f.read()
-                count = safe_write_library(content)
-                self.reload_library_from_disk(silent=True)
-                status_lbl.config(text=f"Updated from file! ({count} commands loaded)", fg="#34d399")
-            except Exception as e:
-                status_lbl.config(text=f"Error: {e}", fg="#fb7185")
-
-        def download_from_url():
-            raw_url = url_entry.get().strip()
-            if not raw_url:
-                status_lbl.config(text="Please paste a Google Drive or .txt URL first.", fg="#fbbf24")
-                return
-            save_configured_url(raw_url)
-            status_lbl.config(text="Downloading...", fg="#38bdf8")
-            threading.Thread(target=self._download_url_worker, args=(raw_url, False, status_lbl), daemon=True).start()
-
-        self._btn(btn_row, "Import from Downloads", import_downloads, "#1e294d", "#e8eefc").pack(side="left", padx=(0, 8))
-        self._btn(btn_row, "Download & Update Now", download_from_url, "#10b981", "#041f13").pack(side="left")
-
-    def _download_url_worker(self, raw_url, silent, status_lbl=None):
-        try:
-            direct_url = normalize_download_url(raw_url)
-            req = urllib.request.Request(direct_url, headers={"User-Agent": "RPL-Studio/3.0"})
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                content = resp.read().decode("utf-8", errors="replace")
-
-            cur = ""
-            if os.path.exists(LIB_PATH):
-                with open(LIB_PATH, "r", encoding="utf-8") as f:
-                    cur = f.read()
-
-            if content.strip() == cur.strip():
-                if not silent and status_lbl:
-                    self.root.after(0, lambda: status_lbl.config(text="Already up to date!", fg="#34d399"))
-                return
-
-            count = safe_write_library(content)
-            self.root.after(0, lambda: self.reload_library_from_disk(silent=True))
-            self.root.after(0, self._append_log, self.screen_log, f"[Updater] library.txt auto-updated ({count} commands).")
-            if not silent and status_lbl:
-                self.root.after(0, lambda: status_lbl.config(text=f"Success! Updated ({count} commands).", fg="#34d399"))
-        except Exception as e:
-            if not silent and status_lbl:
-                self.root.after(0, lambda err=str(e): status_lbl.config(text=f"Update failed: {err}", fg="#fb7185"))
-
-    def open_library_base(self):
-        _, meta = self.parse_library()
-        win = tk.Toplevel(self.root)
-        win.title("RPL Library Base - Developer Guide")
-        win.geometry("780x620")
-        win.configure(bg="#090d1a")
-
-        tk.Label(
-            win, text="RPL LIBRARY BASE (Developer Reference)",
-            bg="#11182d", fg="#38bdf8", font=("Segoe UI", 14, "bold"), anchor="w", padx=16, pady=12
-        ).pack(fill="x")
-
-        box = tk.Text(win, bg="#080c18", fg="#e2e8f0", font=("Consolas", 10), relief="flat", padx=16, pady=14, wrap="word")
-        box.pack(fill="both", expand=True, padx=12, pady=12)
-
-        lines = []
-        lines.append("=== 1. DAILY COMMANDS FROM library.txt ===")
-        lines.append("(Use these directly in your .rpl file!)\n")
-        for cmd, info in meta.items():
-            desc = info["desc"] or "Custom binary command"
-            lines.append(f"  {cmd:<14} -> {desc}")
-            lines.append(f"                    Binary: {info['code']}")
-        lines.append("\n=== 2. BUILT-IN PYTHON-STYLE LIBRARIES (use <name>) ===\n")
-        lines.append("  use math")
-        lines.append("    math.rand(min, max)  -> Random number (e.g. math.rand(1, 50))")
-        lines.append("    math.sqrt(x)         -> Square root")
-        lines.append("    math.round(x)        -> Round number")
-        lines.append("    math.abs(x)          -> Absolute value")
-        lines.append("    math.pi              -> 3.14159\n")
-        lines.append("  use text")
-        lines.append("    text.upper(s)        -> UPPERCASE text")
-        lines.append("    text.lower(s)        -> lowercase text")
-        lines.append("    text.reverse(s)      -> Reverse text")
-        lines.append("    text.len(s)          -> Length of text\n")
-        lines.append("  use time")
-        lines.append("    time.now()           -> Current time (HH:MM:SS)")
-        lines.append("    time.year()          -> Current year")
-        lines.append("    time.wait(ms)        -> Pause (e.g. time.wait(500))\n")
-        lines.append("  use ui")
-        lines.append('    ui.window("Title", "Msg") -> Open custom window')
-        lines.append('    ui.alert("Title", "Msg")  -> Show popup message\n')
-        lines.append("=== 3. HOW TO WRITE .rpl CODE (LIKE PYTHON) ===\n")
-        lines.append('  name = "Ridwaan"               // Variable')
-        lines.append('  go "Hello " + name             // Print (instead of print)')
-        lines.append("  if score >= 10:                // Condition")
-        lines.append('      go "You win!"')
-        lines.append("  else:")
-        lines.append('      go "Try again"')
-        lines.append("  for i in range(3):             // Loop 3 times")
-        lines.append("      go i")
-        lines.append("  def greet(who):                // Function")
-        lines.append('      go "Hi " + who')
-        lines.append('  greet("Coder")')
-
-        box.insert("1.0", "\n".join(lines))
-        box.config(state="disabled")
-
-    def load_files(self):
-        with open(LIB_PATH, "r", encoding="utf-8") as f:
-            self.lib_text.delete("1.0", "end")
-            self.lib_text.insert("1.0", f.read())
-        with open(self.current_rpl_path, "r", encoding="utf-8") as f:
-            self.code_text.delete("1.0", "end")
-            self.code_text.insert("1.0", f.read())
-        self.code_header.config(text=f"{os.path.basename(self.current_rpl_path)} (Python-style RPL Code)")
-        self.parse_library()
-
-    def reload_library_from_disk(self, silent=False):
-        if os.path.exists(LIB_PATH):
-            with open(LIB_PATH, "r", encoding="utf-8") as f:
-                self.lib_text.delete("1.0", "end")
-                self.lib_text.insert("1.0", f.read())
-            d, _ = self.parse_library()
-            if not silent:
-                messagebox.showinfo("Reloaded", f"Loaded {len(d)} commands from library.txt!")
-
-    def open_rpl_file(self):
-        path = filedialog.askopenfilename(title="Open .rpl File", initialdir=APP_DIR, filetypes=[("RPL Files", "*.rpl"), ("All Files", "*.*")])
-        if not path:
-            return
-        self.current_rpl_path = path
-        with open(path, "r", encoding="utf-8") as f:
-            self.code_text.delete("1.0", "end")
-            self.code_text.insert("1.0", f.read())
-        self.code_header.config(text=f"{os.path.basename(path)} (Python-style RPL Code)")
-
-    def save_files(self):
-        try:
-            self.save_files_silent()
-            self.parse_library()
-            messagebox.showinfo("Saved", f"Saved library.txt and {os.path.basename(self.current_rpl_path)}!")
-        except Exception as e:
-            messagebox.showerror("Save Error", str(e))
-
-    def save_files_silent(self):
-        lib_content = self.lib_text.get("1.0", "end-1c")
-        safe_write_library(lib_content)
-        with open(self.current_rpl_path, "w", encoding="utf-8") as f:
-            f.write(self.code_text.get("1.0", "end-1c"))
-
-    def parse_library(self):
-        dictionary = {}
-        meta = {}
-        for raw in self.lib_text.get("1.0", "end-1c").splitlines():
-            line = raw.strip()
-            if not line or line.startswith("//") or line.startswith("#"):
-                continue
-            if ":" in line:
-                word, rest = line.split(":", 1)
-                word = word.strip()
-                if "|" in rest:
-                    code, desc = rest.split("|", 1)
-                else:
-                    code, desc = rest, ""
-                code, desc = code.strip(), desc.strip()
-                if word:
-                    dictionary[word] = code
-                    meta[word] = {"code": code, "desc": desc}
-        self.lib_status.config(text=f"{len(dictionary)} commands loaded from library.txt")
-        return dictionary, meta
-
-    def _append_log(self, widget, msg):
-        widget.config(state="normal")
-        widget.insert("end", msg + "\n")
-        widget.see("end")
-        widget.config(state="disabled")
-
-    def _clear_logs(self):
-        for w in (self.laptop_log, self.screen_log):
-            w.config(state="normal")
-            w.delete("1.0", "end")
-            w.config(state="disabled")
-
-    def _update_leds(self, binary_str):
-        chunks = [p for p in binary_str.strip().split() if set(p) <= {"0", "1"}]
-        last_byte = chunks[-1] if chunks else "00000000"
-        bits = list(last_byte[-8:].rjust(8, "0"))
-        for lbl, b in zip(self.leds, bits):
-            if b == "1":
-                lbl.config(text="1", bg="#123d31", fg="#34d399")
-            else:
-                lbl.config(text="0", bg="#141d38", fg="#4f6299")
-
-    def _open_rpl_window(self, title_text, body_text):
-        win = tk.Toplevel(self.root)
-        win.title(title_text)
-        win.geometry("430x220")
-        win.configure(bg="#11182d")
-        tk.Label(win, text="[RPL] " + title_text, bg="#11182d", fg="#38bdf8", font=("Segoe UI", 15, "bold")).pack(pady=(26, 10))
-        tk.Label(win, text=body_text, bg="#080c18", fg="#34d399", font=("Consolas", 9), wraplength=380, padx=12, pady=10).pack(pady=10, padx=16, fill="x")
-
-    def stop_rpl(self):
-        self.running = False
-
-    def start_rpl(self):
-        try:
-            self.save_files_silent()
-        except Exception as e:
-            messagebox.showerror("library.txt Error", str(e))
-            return
-        self._clear_logs()
-        self.running = True
-        dictionary, _ = self.parse_library()
-        raw_lines = self.code_text.get("1.0", "end-1c").splitlines()
-        threading.Thread(target=self._run_worker, args=(dictionary, raw_lines), daemon=True).start()
-
-    def _send_laptop(self, word, binary, extra_arg=None):
-        decoded = decode_binary(binary)
-        if self.pure_binary_var.get():
-            msg = binary
-        elif decoded:
-            msg = f"{word} --> {binary}  (decoded: '{decoded}')"
-        else:
-            msg = f"{word} --> {binary}"
-
-        self.root.after(0, self._append_log, self.laptop_log, msg)
-        self.root.after(0, self._update_leds, binary)
-
-        action = (decoded or word).lower()
-        if action == "open window":
-            self.root.after(0, self._open_rpl_window, extra_arg or "RPL Window", "Opened by 8-bit binary:\n" + binary)
-        elif action == "beep" and winsound:
-            try:
-                winsound.Beep(700, 160)
-            except Exception:
-                pass
-
-    def _parse_python_blocks(self, raw_lines):
-        tokens = []
-        for idx, raw in enumerate(raw_lines):
-            expanded = raw.replace("\t", "    ")
-            cleaned = strip_comment(expanded)
-            if not cleaned.strip():
-                continue
-            indent = len(expanded) - len(expanded.lstrip(" "))
-            tokens.append((idx + 1, indent, cleaned.strip()))
-
-        def build_block(pos, base_indent):
-            nodes = []
-            while pos < len(tokens):
-                line_num, indent, text = tokens[pos]
-                if indent < base_indent:
-                    break
-                if indent > base_indent:
-                    raise SyntaxError(f"Line {line_num}: Unexpected indentation")
-
-                if text.endswith(":"):
-                    header = text[:-1].strip()
-                    pos += 1
-                    if pos >= len(tokens) or tokens[pos][1] <= indent:
-                        raise SyntaxError(f"Line {line_num}: Expected an indented block after ':'")
-                    body, pos = build_block(pos, tokens[pos][1])
-                    nodes.append({"type": "block", "line": line_num, "header": header, "body": body})
-                else:
-                    nodes.append({"type": "stmt", "line": line_num, "text": text})
-                    pos += 1
-            return nodes, pos
-
-        ast, _ = build_block(0, tokens[0][1] if tokens else 0)
-        return ast
-
-    def _run_worker(self, dictionary, raw_lines):
-        env = {
-            "str": str, "int": int, "float": float, "len": len,
-            "range": range, "round": round, "abs": abs,
-            "min": min, "max": max, "bool": bool,
-            "True": True, "False": False, "None": None
-        }
-        sorted_keys = sorted(dictionary.keys(), key=len, reverse=True)
-        steps = [0]
-
-        def safe_eval(expr, line_num):
-            try:
-                return eval(expr, {"__builtins__": {}}, env)
-            except Exception as e:
-                raise RuntimeError(f"Line {line_num}: {e}")
-
-        def exec_nodes(nodes):
-            i = 0
-            while i < len(nodes) and self.running:
-                steps[0] += 1
-                if steps[0] > 5000:
-                    raise RuntimeError("Program stopped (too many steps - possible infinite loop)")
-
-                node = nodes[i]
-                line_num = node["line"]
-
-                if node["type"] == "block":
-                    hdr = node["header"]
-
-                    if hdr.startswith("if "):
-                        matched = False
-                        if safe_eval(hdr[3:].strip(), line_num):
-                            exec_nodes(node["body"])
-                            matched = True
-                        j = i + 1
-                        while j < len(nodes) and nodes[j]["type"] == "block":
-                            nh = nodes[j]["header"]
-                            if nh.startswith("elif "):
-                                if not matched and safe_eval(nh[5:].strip(), nodes[j]["line"]):
-                                    exec_nodes(nodes[j]["body"])
-                                    matched = True
-                                j += 1
-                            elif nh == "else":
-                                if not matched:
-                                    exec_nodes(nodes[j]["body"])
-                                    matched = True
-                                j += 1
-                                break
-                            else:
-                                break
-                        i = j
-                        continue
-
-                    if hdr.startswith("elif ") or hdr == "else":
-                        raise RuntimeError(f"Line {line_num}: '{hdr}' without matching 'if'")
-
-                    m_for = re.match(r"^for\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+in\s+(.+)$", hdr)
-                    if m_for:
-                        var_name = m_for.group(1)
-                        iterable = safe_eval(m_for.group(2).strip(), line_num)
-                        for val in iterable:
-                            if not self.running:
-                                break
-                            env[var_name] = val
-                            exec_nodes(node["body"])
-                        i += 1
-                        continue
-
-                    if hdr.startswith("while "):
-                        cond_expr = hdr[6:].strip()
-                        while self.running and safe_eval(cond_expr, line_num):
-                            steps[0] += 1
-                            if steps[0] > 5000:
-                                raise RuntimeError("Loop stopped (too many steps)")
-                            exec_nodes(node["body"])
-                        i += 1
-                        continue
-
-                    m_def = re.match(r"^def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(([^)]*)\)$", hdr)
-                    if m_def:
-                        fn_name = m_def.group(1)
-                        params = [p.strip() for p in m_def.group(2).split(",") if p.strip()]
-                        body_ref = node["body"]
-
-                        def rpl_func(*args, _params=params, _body=body_ref):
-                            saved = {}
-                            for idx_p, p in enumerate(_params):
-                                if p in env:
-                                    saved[p] = env[p]
-                                env[p] = args[idx_p] if idx_p < len(args) else None
-                            exec_nodes(_body)
-                            for p in _params:
-                                if p in saved:
-                                    env[p] = saved[p]
-                                else:
-                                    env.pop(p, None)
-
-                        env[fn_name] = rpl_func
-                        i += 1
-                        continue
-
-                    raise RuntimeError(f"Line {line_num}: Unknown block '{hdr}:'")
-
-                stmt = node["text"]
-                i += 1
-
-                if stmt.startswith("use ") or stmt.startswith("import "):
-                    lib_name = stmt.split(None, 1)[1].strip()
-                    if lib_name == "math":
-                        env["math"] = MathLib()
-                    elif lib_name == "text":
-                        env["text"] = TextLib()
-                    elif lib_name == "time":
-                        env["time"] = TimeLib()
-                    elif lib_name == "ui":
-                        env["ui"] = UILib(self)
-                    else:
-                        raise RuntimeError(f"Line {line_num}: Unknown library '{lib_name}'. Check Library Base!")
-                    continue
-
-                if stmt == "go" or stmt.startswith("go ") or (stmt.startswith("go(") and stmt.endswith(")")):
-                    if "go" in dictionary:
-                        self._send_laptop("go", dictionary["go"])
-                    if stmt == "go":
-                        out_val = ""
-                    elif stmt.startswith("go(") and stmt.endswith(")"):
-                        inner = stmt[3:-1].strip()
-                        out_val = safe_eval(inner, line_num) if inner else ""
-                    else:
-                        inner = stmt[3:].strip()
-                        if inner in dictionary and inner not in env:
-                            out_val = dictionary[inner]
-                            self._send_laptop(inner, dictionary[inner])
-                        else:
-                            out_val = safe_eval(inner, line_num)
-                    self.root.after(0, self._append_log, self.screen_log, f"> {out_val}")
-                    if isinstance(out_val, str) and out_val:
-                        self._send_laptop(f'"{out_val}"', encode_binary(out_val))
-                    time.sleep(0.1)
-                    continue
-
-                m_assign = re.match(r"^([a-zA-Z_][a-zA-Z0-9_]*)\s*=(?!=)\s*(.+)$", stmt)
-                if m_assign:
-                    env[m_assign.group(1)] = safe_eval(m_assign.group(2).strip(), line_num)
-                    continue
-
-                matched_cmd = None
-                extra_arg = None
-                for k in sorted_keys:
-                    if stmt == k:
-                        matched_cmd = k
-                        break
-                    elif stmt.startswith(k + " "):
-                        rest = stmt[len(k):].strip()
-                        if (rest.startswith('"') and rest.endswith('"')) or (rest.startswith("'") and rest.endswith("'")):
-                            matched_cmd = k
-                            extra_arg = rest[1:-1]
-                            break
-
-                if matched_cmd:
-                    self._send_laptop(matched_cmd, dictionary[matched_cmd], extra_arg)
-                    time.sleep(0.15)
-                    continue
-
-                if "(" in stmt or stmt in env:
-                    safe_eval(stmt, line_num)
-                    continue
-
-                for word in stmt.split():
-                    if word in dictionary:
-                        self._send_laptop(word, dictionary[word])
-                        time.sleep(0.15)
-                    else:
-                        raise RuntimeError(f"Line {line_num}: Unknown command or variable '{word}'")
-
-        try:
-            ast = self._parse_python_blocks(raw_lines)
-            exec_nodes(ast)
-            self.root.after(0, self._append_log, self.screen_log, "Done.")
-        except Exception as err:
-            self.root.after(0, self._append_log, self.screen_log, f"ERROR: {err}")
-        finally:
-            self.running = False
-
-
-if __name__ == "__main__":
-    try:
-        if "--init" in sys.argv:
-            ensure_files()
-            sys.exit(0)
-        root = tk.Tk()
-        RPLStudioApp(root)
-        root.mainloop()
-    except Exception:
-        err_msg = traceback.format_exc()
-        try:
-            with open(CRASH_LOG_PATH, "w", encoding="utf-8") as f:
-                f.write(err_msg)
-        except Exception:
-            pass
-        ctypes.windll.user32.MessageBoxW(0, err_msg, "RPL Studio Error", 0x10)
-# ===END_RPL_PY===
+        self.file_switch.pack(side="left", padx=4)
+
+        ctk.CTkButton(right_box, text="Library Base", command=self.open_library_base, width=110, fg_color="#2563eb", hover_color="#1d4ed8").pack(side="left", padx=4)
+        ctk.CTkButton(right_box, text="Update .txt", command=self.manual_import_downloads, width=105, fg_color="#0f766e", hover_color="#0d9488").pack(side="left", padx=4)
+        ctk.CTkButton(right_box, text="Save", command=self.save_files, width=75, fg_color="#1e293b", hover_color="#334155").pack(side="left", padx=4)
+        ctk.CTkButton(right_box, text="Stop", command=self.stop_rpl, width=70, fg_color="#7f1d1d", hover_color="#991b1b").pack(side="left", padx=4)
+        ctk.CTkButton(right_box, text="Run RPL", command=self.start_rpl, width=105, fg_color="#10b981", hover_color="#059669", text_color="#042f2e", font=ctk.CTkFont("Segoe UI", 13, "bold")).pack(side="left", padx=(6, 0))
+
+        # Main 3 Columns
+        main = ctk.CTkFrame(self.root, fg_color="transparent")
+        main.pack(fill="both", expand=True, padx=14, pady=(0, 14))
+        main.grid_columnconfigure(0, weight=1)
+        main.grid_columnconfigure(1, weight=2)
+        main.grid_columnconfigure(2, weight=1)
+        main.grid_rowconfigure(0, weight=1)
+
+        # Col 1: library.txt
+        c1 = ctk.CTkFrame(main, corner_radius=12, fg_color="#11182d")
+        c1.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        c1_head = ctk.CTkFrame(c1, fg_color="#17203d", corner_radius=10)
+        c1_head.pack(fill="x", padx=8, pady=(8, 4))
+        ctk.CTkLabel(c1_head, text="library.txt (8-Bit Binary)", font=ctk.CTkFont("Segoe UI", 13, "bold")).pack(side="left", padx=10, pady=6)
+        ctk.CTkButton(c1_head, text="Reload", width=60, height=24, command=self.reload_library_from_disk, fg_color="#273663").pack(sid
